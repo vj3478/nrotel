@@ -1,0 +1,44 @@
+{
+  "metrics": {
+    "K8sHpaSample.minReplicas": "k8s.hpa.min_replicas",
+    "K8sHpaSample.maxReplicas": "k8s.hpa.max_replicas",
+    "K8sHpaSample.currentReplicas": "k8s.hpa.current_replicas",
+    "K8sHpaSample.desiredReplicas": "k8s.hpa.desired_replicas",
+    "K8sHpaSample.currentCpuUtilizationPercentage": "k8s.hpa.current_cpu_utilization",
+    "K8sHpaSample.targetCpuUtilizationPercentage": "k8s.hpa.target_cpu_utilization"
+  },
+  "attributes": {
+    "K8sHpaSample.hpaName": "k8s.hpa.name",
+    "K8sHpaSample.namespaceName": "k8s.namespace.name",
+    "K8sHpaSample.clusterName": "k8s.cluster.name",
+    "K8sHpaSample.uid": "k8s.hpa.uid",
+    "K8sHpaSample.creationTimestamp": "k8s.hpa.creation_timestamp"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "namespaceName": "k8s.namespace.name",
+    "hpaName": "k8s.hpa.name"
+  },
+  "aggregates": {
+    "hpa.current_replicas.avg": "average(k8s.hpa.current_replicas)",
+    "hpa.desired_replicas.avg": "average(k8s.hpa.desired_replicas)",
+    "hpa.current_cpu_utilization.avg": "average(k8s.hpa.current_cpu_utilization)",
+    "hpa.target_cpu_utilization.avg": "average(k8s.hpa.target_cpu_utilization)"
+  }
+}
