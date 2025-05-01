@@ -1,0 +1,43 @@
+{
+  "metrics": {
+    "K8sReplicasetSample.replicas": "k8s.replicaset.replicas",
+    "K8sReplicasetSample.replicasReady": "k8s.replicaset.ready_replicas",
+    "K8sReplicasetSample.replicasAvailable": "k8s.replicaset.available_replicas",
+    "K8sReplicasetSample.replicasFullyLabeled": "k8s.replicaset.fully_labeled_replicas",
+    "K8sReplicasetSample.observedGeneration": "k8s.replicaset.observed_generation"
+  },
+  "attributes": {
+    "K8sReplicasetSample.replicasetName": "k8s.replicaset.name",
+    "K8sReplicasetSample.namespaceName": "k8s.namespace.name",
+    "K8sReplicasetSample.clusterName": "k8s.cluster.name",
+    "K8sReplicasetSample.uid": "k8s.replicaset.uid",
+    "K8sReplicasetSample.creationTimestamp": "k8s.replicaset.creation_timestamp"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "namespaceName": "k8s.namespace.name",
+    "replicasetName": "k8s.replicaset.name"
+  },
+  "aggregates": {
+    "replicaset.replicas.sum": "sum(k8s.replicaset.replicas)",
+    "replicaset.ready_replicas.sum": "sum(k8s.replicaset.ready_replicas)",
+    "replicaset.available_replicas.sum": "sum(k8s.replicaset.available_replicas)",
+    "replicaset.fully_labeled_replicas.sum": "sum(k8s.replicaset.fully_labeled_replicas)"
+  }
+}
