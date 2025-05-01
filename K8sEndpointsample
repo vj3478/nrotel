@@ -1,0 +1,40 @@
+{
+  "metrics": {
+    "K8sEndpointSample.endpointCount": "k8s.endpoint.count",
+    "K8sEndpointSample.notReadyEndpointCount": "k8s.endpoint.not_ready_count"
+  },
+  "attributes": {
+    "K8sEndpointSample.endpointName": "k8s.endpoint.name",
+    "K8sEndpointSample.namespaceName": "k8s.namespace.name",
+    "K8sEndpointSample.clusterName": "k8s.cluster.name",
+    "K8sEndpointSample.serviceName": "k8s.service.name",
+    "K8sEndpointSample.uid": "k8s.endpoint.uid",
+    "K8sEndpointSample.creationTimestamp": "k8s.endpoint.creation_timestamp"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "namespaceName": "k8s.namespace.name",
+    "endpointName": "k8s.endpoint.name",
+    "serviceName": "k8s.service.name"
+  },
+  "aggregates": {
+    "endpoint.count.sum": "sum(k8s.endpoint.count)",
+    "endpoint.not_ready_count.sum": "sum(k8s.endpoint.not_ready_count)"
+  }
+}
