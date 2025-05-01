@@ -1,0 +1,67 @@
+{
+  "metrics": {
+    "K8sContainerSample.cpuUsedCores": "container.cpu.usage",
+    "K8sContainerSample.cpuLimitCores": "container.cpu.limit",
+    "K8sContainerSample.cpuRequestedCores": "container.cpu.request",
+    "K8sContainerSample.memoryUsedBytes": "container.memory.usage",
+    "K8sContainerSample.memoryWorkingSetBytes": "container.memory.working_set",
+    "K8sContainerSample.memoryLimitBytes": "container.memory.limit",
+    "K8sContainerSample.memoryRequestedBytes": "container.memory.request",
+    "K8sContainerSample.memoryRssBytes": "container.memory.rss",
+    "K8sContainerSample.memoryPageFaults": "container.memory.page_faults",
+    "K8sContainerSample.memoryMajorPageFaults": "container.memory.major_page_faults",
+    "K8sContainerSample.restartCount": "container.restarts",
+    "K8sContainerSample.fsUsedBytes": "container.filesystem.usage",
+    "K8sContainerSample.fsAvailableBytes": "container.filesystem.available",
+    "K8sContainerSample.fsCapacityBytes": "container.filesystem.capacity",
+    "K8sContainerSample.fsInodes": "container.filesystem.inodes",
+    "K8sContainerSample.fsInodesFree": "container.filesystem.inodes_free",
+    "K8sContainerSample.fsInodesUsed": "container.filesystem.inodes_used",
+    "K8sContainerSample.networkTransmitBytesPerSecond": "container.network.transmit_bytes_per_second",
+    "K8sContainerSample.networkReceiveBytesPerSecond": "container.network.receive_bytes_per_second"
+  },
+  "attributes": {
+    "K8sContainerSample.containerName": "container.name",
+    "K8sContainerSample.imageName": "container.image.name",
+    "K8sContainerSample.imageId": "container.image.id",
+    "K8sContainerSample.imageTag": "container.image.tag",
+    "K8sContainerSample.podName": "k8s.pod.name",
+    "K8sContainerSample.namespaceName": "k8s.namespace.name",
+    "K8sContainerSample.nodeName": "k8s.node.name",
+    "K8sContainerSample.clusterName": "k8s.cluster.name",
+    "K8sContainerSample.status": "container.status"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "nodeName": "k8s.node.name",
+    "namespaceName": "k8s.namespace.name",
+    "podName": "k8s.pod.name",
+    "containerName": "container.name",
+    "imageName": "container.image.name",
+    "status": "container.status"
+  },
+  "aggregates": {
+    "container.cpu.usage.avg": "average(container.cpu.usage)",
+    "container.memory.usage.avg": "average(container.memory.usage)",
+    "container.restarts.sum": "sum(container.restarts)",
+    "container.filesystem.usage.max": "max(container.filesystem.usage)",
+    "container.network.transmit_bytes_per_second.sum": "sum(container.network.transmit_bytes_per_second)",
+    "container.network.receive_bytes_per_second.sum": "sum(container.network.receive_bytes_per_second)"
+  }
+}
