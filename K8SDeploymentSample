@@ -1,0 +1,49 @@
+{
+  "metrics": {
+    "K8sDeploymentSample.replicasDesired": "k8s.deployment.desired_replicas",
+    "K8sDeploymentSample.replicasReady": "k8s.deployment.ready_replicas",
+    "K8sDeploymentSample.replicasUnavailable": "k8s.deployment.unavailable_replicas",
+    "K8sDeploymentSample.replicasUpdated": "k8s.deployment.updated_replicas",
+    "K8sDeploymentSample.replicasAvailable": "k8s.deployment.available_replicas",
+    "K8sDeploymentSample.replicas": "k8s.deployment.replicas",
+    "K8sDeploymentSample.observedGeneration": "k8s.deployment.observed_generation",
+    "K8sDeploymentSample.updatedReplicas": "k8s.deployment.updated_replicas"
+  },
+  "attributes": {
+    "K8sDeploymentSample.deploymentName": "k8s.deployment.name",
+    "K8sDeploymentSample.namespaceName": "k8s.namespace.name",
+    "K8sDeploymentSample.clusterName": "k8s.cluster.name",
+    "K8sDeploymentSample.uid": "k8s.deployment.uid",
+    "K8sDeploymentSample.strategy": "k8s.deployment.strategy",
+    "K8sDeploymentSample.creationTimestamp": "k8s.deployment.creation_timestamp"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "namespaceName": "k8s.namespace.name",
+    "deploymentName": "k8s.deployment.name",
+    "strategy": "k8s.deployment.strategy"
+  },
+  "aggregates": {
+    "deployment.replicas.desired.sum": "sum(k8s.deployment.desired_replicas)",
+    "deployment.replicas.ready.sum": "sum(k8s.deployment.ready_replicas)",
+    "deployment.replicas.unavailable.sum": "sum(k8s.deployment.unavailable_replicas)",
+    "deployment.replicas.updated.sum": "sum(k8s.deployment.updated_replicas)",
+    "deployment.replicas.available.sum": "sum(k8s.deployment.available_replicas)"
+  }
+}
