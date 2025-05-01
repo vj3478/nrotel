@@ -1,0 +1,63 @@
+{
+  "metrics": {
+    "K8sPodSample.cpuUsedCores": "k8s.pod.cpu.usage_cores",
+    "K8sPodSample.cpuRequestedCores": "k8s.pod.cpu.request_cores",
+    "K8sPodSample.cpuLimitCores": "k8s.pod.cpu.limit_cores",
+    "K8sPodSample.memoryUsedBytes": "k8s.pod.memory.usage_bytes",
+    "K8sPodSample.memoryRequestedBytes": "k8s.pod.memory.request_bytes",
+    "K8sPodSample.memoryLimitBytes": "k8s.pod.memory.limit_bytes",
+    "K8sPodSample.memoryWorkingSetBytes": "k8s.pod.memory.working_set_bytes",
+    "K8sPodSample.memoryRssBytes": "k8s.pod.memory.rss_bytes",
+    "K8sPodSample.memoryPageFaults": "k8s.pod.memory.page_faults",
+    "K8sPodSample.memoryMajorPageFaults": "k8s.pod.memory.major_page_faults",
+    "K8sPodSample.restartCount": "k8s.pod.restart_count",
+    "K8sPodSample.fsUsedBytes": "k8s.pod.filesystem.usage_bytes",
+    "K8sPodSample.fsAvailableBytes": "k8s.pod.filesystem.available_bytes",
+    "K8sPodSample.fsCapacityBytes": "k8s.pod.filesystem.capacity_bytes",
+    "K8sPodSample.fsInodes": "k8s.pod.filesystem.inodes",
+    "K8sPodSample.fsInodesFree": "k8s.pod.filesystem.inodes_free",
+    "K8sPodSample.fsInodesUsed": "k8s.pod.filesystem.inodes_used",
+    "K8sPodSample.networkTransmitBytesPerSecond": "k8s.pod.network.transmit_bytes_per_second",
+    "K8sPodSample.networkReceiveBytesPerSecond": "k8s.pod.network.receive_bytes_per_second"
+  },
+  "attributes": {
+    "K8sPodSample.podName": "k8s.pod.name",
+    "K8sPodSample.namespaceName": "k8s.namespace.name",
+    "K8sPodSample.nodeName": "k8s.node.name",
+    "K8sPodSample.clusterName": "k8s.cluster.name",
+    "K8sPodSample.status": "k8s.pod.status.phase",
+    "K8sPodSample.uid": "k8s.pod.uid",
+    "K8sPodSample.creationTimestamp": "k8s.pod.creation_timestamp"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "nodeName": "k8s.node.name",
+    "namespaceName": "k8s.namespace.name",
+    "podName": "k8s.pod.name",
+    "status": "k8s.pod.status.phase"
+  },
+  "aggregates": {
+    "pod.cpu.usage_cores.avg": "average(k8s.pod.cpu.usage_cores)",
+    "pod.memory.usage_bytes.avg": "average(k8s.pod.memory.usage_bytes)",
+    "pod.restart_count.sum": "sum(k8s.pod.restart_count)",
+    "pod.filesystem.usage_bytes.max": "max(k8s.pod.filesystem.usage_bytes)",
+    "pod.network.transmit_bytes_per_second.sum": "sum(k8s.pod.network.transmit_bytes_per_second)",
+    "pod.network.receive_bytes_per_second.sum": "sum(k8s.pod.network.receive_bytes_per_second)"
+  }
+}
