@@ -1,0 +1,42 @@
+{
+  "metrics": {
+    "K8sDaemonsetSample.desiredScheduled": "k8s.daemonset.desired_scheduled_nodes",
+    "K8sDaemonsetSample.currentScheduled": "k8s.daemonset.current_scheduled_nodes",
+    "K8sDaemonsetSample.numberMisscheduled": "k8s.daemonset.misscheduled_nodes",
+    "K8sDaemonsetSample.numberReady": "k8s.daemonset.ready_nodes"
+  },
+  "attributes": {
+    "K8sDaemonsetSample.daemonsetName": "k8s.daemonset.name",
+    "K8sDaemonsetSample.namespaceName": "k8s.namespace.name",
+    "K8sDaemonsetSample.clusterName": "k8s.cluster.name",
+    "K8sDaemonsetSample.uid": "k8s.daemonset.uid",
+    "K8sDaemonsetSample.creationTimestamp": "k8s.daemonset.creation_timestamp"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "namespaceName": "k8s.namespace.name",
+    "daemonsetName": "k8s.daemonset.name"
+  },
+  "aggregates": {
+    "daemonset.desired_scheduled_nodes.sum": "sum(k8s.daemonset.desired_scheduled_nodes)",
+    "daemonset.current_scheduled_nodes.sum": "sum(k8s.daemonset.current_scheduled_nodes)",
+    "daemonset.misscheduled_nodes.sum": "sum(k8s.daemonset.misscheduled_nodes)",
+    "daemonset.ready_nodes.sum": "sum(k8s.daemonset.ready_nodes)"
+  }
+}
