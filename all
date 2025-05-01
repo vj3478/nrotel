@@ -1,0 +1,113 @@
+{
+  "resources": {
+    "K8sNodeSample": {
+      "metrics": {
+        "K8sNodeSample.cpuUsedCores": "system.cpu.time",
+        "K8sNodeSample.cpuUtilization": "system.cpu.utilization",
+        "K8sNodeSample.memoryUsedBytes": "system.memory.usage",
+        "K8sNodeSample.memoryUtilization": "system.memory.utilization",
+        "K8sNodeSample.diskUsedBytes": "system.filesystem.usage",
+        "K8sNodeSample.diskUtilization": "system.filesystem.utilization",
+        "K8sNodeSample.networkTransmitBytesPerSecond": "system.network.io.transmit",
+        "K8sNodeSample.networkReceiveBytesPerSecond": "system.network.io.receive",
+        "K8sNodeSample.allocatableCpuCores": "k8s.node.allocatable.cpu_cores",
+        "K8sNodeSample.allocatableCpuCoresUtilization": "k8s.node.allocatable.cpu_utilization",
+        "K8sNodeSample.allocatableMemoryBytes": "k8s.node.allocatable.memory_bytes"
+      },
+      "attributes": {
+        "K8sNodeSample.nodeName": "k8s.node.name",
+        "K8sNodeSample.clusterName": "k8s.cluster.name",
+        "K8sNodeSample.status": "k8s.node.status.phase"
+      }
+    },
+    "K8sClusterSample": {
+      "metrics": {
+        "K8sClusterSample.nodeCount": "k8s.cluster.nodes.count",
+        "K8sClusterSample.podCount": "k8s.cluster.pods.count"
+      },
+      "attributes": {
+        "K8sClusterSample.clusterName": "k8s.cluster.name"
+      }
+    },
+    "K8sContainerSample": {
+      "metrics": {
+        "K8sContainerSample.cpuUsedCores": "container.cpu.usage",
+        "K8sContainerSample.memoryUsedBytes": "container.memory.usage"
+      },
+      "attributes": {
+        "K8sContainerSample.containerName": "container.name",
+        "K8sContainerSample.podName": "k8s.pod.name"
+      }
+    },
+    "K8sDeploymentSample": {
+      "metrics": {
+        "K8sDeploymentSample.replicasDesired": "k8s.deployment.desired_replicas",
+        "K8sDeploymentSample.replicasReady": "k8s.deployment.ready_replicas"
+      },
+      "attributes": {
+        "K8sDeploymentSample.deploymentName": "k8s.deployment.name"
+      }
+    },
+    "K8sDaemonsetSample": {
+      "metrics": {
+        "K8sDaemonsetSample.desiredScheduled": "k8s.daemonset.desired_scheduled_nodes",
+        "K8sDaemonsetSample.numberReady": "k8s.daemonset.ready_nodes"
+      },
+      "attributes": {
+        "K8sDaemonsetSample.daemonsetName": "k8s.daemonset.name"
+      }
+    },
+    "K8sPodSample": {
+      "metrics": {
+        "K8sPodSample.cpuUsedCores": "k8s.pod.cpu.usage_cores",
+        "K8sPodSample.memoryUsedBytes": "k8s.pod.memory.usage_bytes"
+      },
+      "attributes": {
+        "K8sPodSample.podName": "k8s.pod.name",
+        "K8sPodSample.status": "k8s.pod.status.phase"
+      }
+    },
+    "K8sHPASample": {
+      "metrics": {
+        "K8sHPASample.currentReplicas": "k8s.hpa.current_replicas",
+        "K8sHPASample.desiredReplicas": "k8s.hpa.desired_replicas"
+      },
+      "attributes": {
+        "K8sHPASample.hpaName": "k8s.hpa.name"
+      }
+    },
+    "K8sStatefulSetSample": {
+      "metrics": {
+        "K8sStatefulSetSample.replicas": "k8s.statefulset.replicas",
+        "K8sStatefulSetSample.replicasReady": "k8s.statefulset.ready_replicas"
+      },
+      "attributes": {
+        "K8sStatefulSetSample.statefulsetName": "k8s.statefulset.name"
+      }
+    },
+    "K8sReplicasetSample": {
+      "metrics": {
+        "K8sReplicasetSample.replicas": "k8s.replicaset.replicas",
+        "K8sReplicasetSample.replicasReady": "k8s.replicaset.ready_replicas"
+      },
+      "attributes": {
+        "K8sReplicasetSample.replicasetName": "k8s.replicaset.name"
+      }
+    },
+    "K8sEndpointSample": {
+      "metrics": {
+        "K8sEndpointSample.endpointCount": "k8s.endpoint.count",
+        "K8sEndpointSample.notReadyEndpointCount": "k8s.endpoint.not_ready_count"
+      },
+      "attributes": {
+        "K8sEndpointSample.endpointName": "k8s.endpoint.name",
+        "K8sEndpointSample.serviceName": "k8s.service.name"
+      }
+    }
+  },
+  "functions": [
+    "average", "max", "min", "sum", "count", "latest",
+    "rate", "percentile", "histogram", "uniqueCount",
+    "stddev", "filter", "facet", "timeseries"
+  ]
+}
