@@ -1,0 +1,68 @@
+{
+  "metrics": {
+    "K8sClusterSample.nodeCount": "k8s.cluster.nodes.count",
+    "K8sClusterSample.podCount": "k8s.cluster.pods.count",
+    "K8sClusterSample.namespaceCount": "k8s.cluster.namespaces.count",
+    "K8sClusterSample.deploymentCount": "k8s.cluster.deployments.count",
+    "K8sClusterSample.statefulSetCount": "k8s.cluster.statefulsets.count",
+    "K8sClusterSample.daemonSetCount": "k8s.cluster.daemonsets.count",
+    "K8sClusterSample.jobCount": "k8s.cluster.jobs.count",
+    "K8sClusterSample.cronJobCount": "k8s.cluster.cronjobs.count",
+    "K8sClusterSample.replicaSetCount": "k8s.cluster.replicasets.count",
+    "K8sClusterSample.hpaCount": "k8s.cluster.hpas.count",
+    "K8sClusterSample.serviceCount": "k8s.cluster.services.count",
+    "K8sClusterSample.ingressCount": "k8s.cluster.ingresses.count",
+    "K8sClusterSample.pvcCount": "k8s.cluster.pvcs.count",
+    "K8sClusterSample.pvCount": "k8s.cluster.pvs.count",
+    "K8sClusterSample.configMapCount": "k8s.cluster.configmaps.count",
+    "K8sClusterSample.secretCount": "k8s.cluster.secrets.count",
+    "K8sClusterSample.eventCount": "k8s.cluster.events.count"
+  },
+  "attributes": {
+    "K8sClusterSample.clusterName": "k8s.cluster.name",
+    "K8sClusterSample.k8sVersion": "k8s.cluster.version",
+    "K8sClusterSample.provider": "cloud.provider",
+    "K8sClusterSample.region": "cloud.region",
+    "K8sClusterSample.availabilityZone": "cloud.availability_zone"
+  },
+  "functions": [
+    "average",
+    "max",
+    "min",
+    "sum",
+    "count",
+    "latest",
+    "rate",
+    "percentile",
+    "histogram",
+    "uniqueCount",
+    "stddev",
+    "filter",
+    "facet",
+    "timeseries"
+  ],
+  "dimensions": {
+    "clusterName": "k8s.cluster.name",
+    "region": "cloud.region",
+    "availabilityZone": "cloud.availability_zone"
+  },
+  "aggregates": {
+    "cluster.node.count": "sum(k8s.cluster.nodes.count)",
+    "cluster.pod.count": "sum(k8s.cluster.pods.count)",
+    "cluster.namespace.count": "sum(k8s.cluster.namespaces.count)",
+    "cluster.deployment.count": "sum(k8s.cluster.deployments.count)",
+    "cluster.statefulset.count": "sum(k8s.cluster.statefulsets.count)",
+    "cluster.daemonset.count": "sum(k8s.cluster.daemonsets.count)",
+    "cluster.job.count": "sum(k8s.cluster.jobs.count)",
+    "cluster.cronjob.count": "sum(k8s.cluster.cronjobs.count)",
+    "cluster.replicaset.count": "sum(k8s.cluster.replicasets.count)",
+    "cluster.hpa.count": "sum(k8s.cluster.hpas.count)",
+    "cluster.service.count": "sum(k8s.cluster.services.count)",
+    "cluster.ingress.count": "sum(k8s.cluster.ingresses.count)",
+    "cluster.pvc.count": "sum(k8s.cluster.pvcs.count)",
+    "cluster.pv.count": "sum(k8s.cluster.pvs.count)",
+    "cluster.configmap.count": "sum(k8s.cluster.configmaps.count)",
+    "cluster.secret.count": "sum(k8s.cluster.secrets.count)",
+    "cluster.event.count": "sum(k8s.cluster.events.count)"
+  }
+}
