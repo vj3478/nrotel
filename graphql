@@ -1,0 +1,121 @@
+### 📁 Project Structure
+
+# newrelic_widget_updater/
+# ├─ app.py
+# ├─ handlers.py
+# ├─ modules.py
+# └─ queries.py
+
+### 1. queries.py
+
+def build_update_widget_mutation(config: dict) -> str:
+    import json
+    raw_config = {
+        "nrqlQueries": [
+            {
+                "accountId": config["account_id"],
+                "query": config["nrql_query"]
+            }
+        ]
+    }
+
+    escaped_raw_config = json.dumps(raw_config).replace('"', '\\"')
+    layout_fields = ', '.join(f'{k}: {v}' for k, v in config["layout"].items())
+
+    return f"""
+    mutation {{
+      dashboardUpdateWidget(
+        guid: \"{config['widget_guid']}\",
+        rawConfiguration: \"{escaped_raw_config}\",
+        layout: {{
+          {layout_fields}
+        }}
+      ) {{
+        errors {{
+          description
+        }}
+        widget {{
+          id
+          title
+          layout {{
+            column
+            row
+            width
+            height
+          }}
+          rawConfiguration
+        }}
+      }}
+    }}
+    """
+
+
+### 2. modules.py
+
+import csv
+
+def load_widget_configs_from_csv(filepath: str):
+    configs = []
+    with open(filepath, newline='') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            config = {
+                "widget_guid": row["widget_guid"],
+                "account_id": int(row["account_id"]),
+                "nrql_query": row["nrql_query"],
+                "layout": {
+                    "column": int(row["column"]),
+                    "row": int(row["row"]),
+                    "width": int(row["width"]),
+                    "height": int(row["height"])
+                }
+            }
+            configs.append(config)
+    return configs
+
+
+### 3. handlers.py
+
+import aiohttp
+
+API_KEY = "NRAK-YourNewRelicAPIKey"
+GRAPHQL_ENDPOINT = "https://api.newrelic.com/graphql"
+
+async def send_graphql_mutation(session: aiohttp.ClientSession, mutation: str) -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "API-Key": API_KEY
+    }
+    async with session.post(GRAPHQL_ENDPOINT, headers=headers, json={"query": mutation}) as response:
+        return await response.json()
+
+
+### 4. app.py
+
+import asyncio
+import aiohttp
+import json
+from modules import load_widget_configs_from_csv
+from queries import build_update_widget_mutation
+from handlers import send_graphql_mutation
+
+CSV_FILE = "widgets.csv"
+
+async def main():
+    configs = load_widget_configs_from_csv(CSV_FILE)
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            send_graphql_mutation(session, build_update_widget_mutation(config))
+            for config in configs
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for config, result in zip(configs, results):
+            print(f"\nUpdate result for widget {config['widget_guid']}:")
+            if isinstance(result, Exception):
+                print(f"❌ Error: {result}")
+            else:
+                print(json.dumps(result, indent=2))
+
+if __name__ == "__main__":
+    asyncio.run(main())
