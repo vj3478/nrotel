@@ -1,0 +1,4 @@
+{
+  "K8sNodeSample": "OtelK8sNodeSample",
+  "K8sPodSample": "OtelK8sPodSample"
+}
