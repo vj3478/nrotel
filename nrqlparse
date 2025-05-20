@@ -1,0 +1,174 @@
+
+This file contains Python functions to parse and manipulate NRQL queries (New Relic Query Language).
+
+---
+
+1. nested_nrql(nrql, keyword)
+Purpose: Detects if a query has more than one occurrence of a given keyword (e.g., select, from, etc.).
+
+Example:
+    nrql = "SELECT average(cpu) FROM Metric WHERE appName = 'App' SELECT count(*) FROM Log"
+    nested_nrql(nrql, "select")  # Returns True
+
+---
+
+2. extract_select_clause(nrql)
+Purpose: Extracts the SELECT ... portion of a NRQL query.
+
+Example:
+    nrql = "SELECT average(cpu), max(mem) FROM Metric WHERE environment = 'prod'"
+    extract_select_clause(nrql)
+    # Output: <match object> representing "SELECT average(cpu), max(mem)"
+
+---
+
+3. replace_select_clause(nrql, replace_with)
+Purpose: Replaces the SELECT clause in the given query with a new one.
+
+Example:
+    nrql = "SELECT count(*) FROM Log"
+    new_select = "SELECT average(duration)"
+    replace_select_clause(nrql, new_select)
+    # Output: "SELECT average(duration) FROM Log"
+
+---
+
+4. select_clause(nrql)
+Purpose: Parses the SELECT clause, handles multiple parameters, and removes aliases like AS something.
+
+Example:
+    nrql = "SELECT average(duration) AS avg, count(*) FROM Transaction"
+    select_clause(nrql)
+    # Output: ['average(duration)', 'count(*)']
+
+---
+
+5. extract_facet_clause(nrql)
+Purpose: Extracts the full FACET ... clause if it exists.
+
+Example:
+    nrql = "SELECT count(*) FROM Log FACET hostname"
+    extract_facet_clause(nrql)
+    # Output: <match object> representing "FACET hostname"
+
+---
+
+6. facet_clause(nrql)
+Purpose: Extracts and returns a list of fields used in the FACET clause.
+
+Example:
+    nrql = "SELECT count(*) FROM Transaction FACET appName, host"
+    facet_clause(nrql)
+    # Output: ['appName', 'host']
+
+---
+
+Summary Table:
+
+| Function               | Purpose                              | Example Output               |
+|------------------------|--------------------------------------|------------------------------|
+| nested_nrql()          | Detects multiple same keywords       | True                         |
+| extract_select_clause()| Gets the SELECT portion              | SELECT avg(cpu)              |
+| replace_select_clause()| Substitutes new SELECT part          | SELECT avg(duration) FROM... |
+| select_clause()        | Parses select parameters             | ['avg(duration)', 'count(*)']|
+| extract_facet_clause() | Extracts entire FACET string         | FACET appName                |
+| facet_clause()         | Returns facet fields                 | ['appName', 'host']          |
+
+
+This file continues to explain Python functions used to parse and manipulate NRQL (New Relic Query Language) queries.
+
+---
+
+1. get_providers(nrql)
+Purpose: Extracts provider names from patterns like provider='xyz'.
+
+Example:
+    nrql = "SELECT count(*) FROM Log WHERE provider='aws', provider='gcp'"
+    get_providers(nrql)
+    # Output: ['aws', 'gcp']
+
+---
+
+2. get_table(nrql)
+Purpose: Extracts the table name following FROM.
+
+Example:
+    nrql = "SELECT * FROM Transaction"
+    get_table(nrql)
+    # Output: 'Transaction'
+
+---
+
+3. extract_where_clause(nrql)
+Purpose: Finds all segments that represent WHERE clauses.
+
+Example:
+    nrql = "SELECT * FROM Log WHERE provider='aws' AND region='us-east-1'"
+    extract_where_clause(nrql)
+    # Output: ["WHERE provider='aws' AND region='us-east-1'"]
+
+---
+
+4. find_terminating_parenthesis(nrql)
+Purpose: Locates the closing parenthesis of the WHERE clause for safe extraction.
+
+Example:
+    nrql = "SELECT * FROM Metric WHERE (value > 10 AND region='us')"
+    find_terminating_parenthesis(nrql)
+    # Output: Tuple with index where WHERE starts and where the closing ')' ends
+
+---
+
+5. where_clauses(nrql)
+Purpose: Extracts and returns individual WHERE conditions (split by AND/OR).
+
+Example:
+    nrql = "SELECT * FROM Metric WHERE provider='aws' AND region='us-east-1'"
+    where_clauses(nrql)
+    # Output: ["provider='aws'", "region='us-east-1'"]
+
+---
+
+6. remove_facet_clause(nrql)
+Purpose: Removes the FACET clause from the query.
+
+Example:
+    nrql = "SELECT count(*) FROM Log FACET appName"
+    remove_facet_clause(nrql)
+    # Output: "SELECT count(*) FROM Log"
+
+---
+
+7. is_sum_alert(nrql)
+Purpose: Checks if the alert query contains a sum() function.
+
+Example:
+    nrql = "SELECT sum(duration) FROM Transaction"
+    is_sum_alert(nrql)
+    # Output: True
+
+---
+
+8. is_count_alert(nrql)
+Purpose: Checks if the alert query uses count().
+
+Example:
+    nrql = "SELECT count(*) FROM Transaction"
+    is_count_alert(nrql)
+    # Output: True
+
+---
+
+Summary Table:
+
+| Function                    | Description                                     | Example Result               |
+|-----------------------------|-------------------------------------------------|------------------------------|
+| get_providers()             | Extracts values of provider filters            | ['aws', 'gcp']               |
+| get_table()                 | Gets the table after FROM                      | 'Transaction'                |
+| extract_where_clause()      | Extracts full WHERE clause                     | ["WHERE condition"]          |
+| find_terminating_parenthesis() | Finds where a WHERE clause ends         | (start, end)                 |
+| where_clauses()             | Extracts each WHERE condition                  | ["key1='val1'", "key2='val2'"]|
+| remove_facet_clause()       | Removes FACET clause                           | "SELECT ..."                 |
+| is_sum_alert()              | Checks if sum() is used                        | True/False                   |
+| is_count_alert()            | Checks if count() is used                      | True/False                   |
+
