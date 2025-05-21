@@ -1,53 +1,69 @@
-import csv
 import json
 import requests
+import csv
 
 # Configuration
 GRAPHQL_URL = "https://api.newrelic.com/graphql"
-API_KEY = "YOUR_NEW_RELIC_API_KEY"  # 🔐 Replace with your actual key
+API_KEY = "YOUR_NEW_RELIC_API_KEY"  # Replace with your actual key
+INPUT_JSON = "dashboard.json"
+OUTPUT_CSV = "validated_dashboard_queries.csv"
 BATCH_SIZE = 25
-INPUT_FILE = "nrql_queries.csv"
-OUTPUT_FILE = "validated_nrql_queries.csv"
 
-# Load input CSV
-def load_nrql_queries(file_path):
-    with open(file_path, newline='') as f:
-        return list(csv.DictReader(f))
+# ✅ Extract and batch NRQL queries from widgets (supports list of accountIds)
+def extract_and_batch_queries(json_file, batch_size=25):
+    with open(json_file) as f:
+        data = json.load(f)
 
-# Batch the queries
-def batch_queries(queries, size):
-    return [queries[i:i + size] for i in range(0, len(queries), size)]
+    batched = []
+    temp_batch = []
 
-# Build GraphQL query that supports multiple accounts per query
+    pages = data["data"]["actor"]["entity"].get("pages", [])
+    for page in pages:
+        for widget in page.get("widgets", []):
+            config = widget.get("rawConfiguration", {})
+            account_id = config.get("accountId")
+            queries = config.get("nrqlQueries", [])
+
+            # Convert accountId to comma-separated string if it's a list
+            if isinstance(account_id, list):
+                account_id_str = ",".join(map(str, account_id))
+            else:
+                account_id_str = str(account_id)
+
+            for q in queries:
+                if "query" in q:
+                    temp_batch.append({
+                        "accountId": account_id_str,
+                        "nrqlQuery": q["query"]
+                    })
+                    if len(temp_batch) == batch_size:
+                        batched.append(temp_batch)
+                        temp_batch = []
+
+    if temp_batch:
+        batched.append(temp_batch)
+
+    return batched
+
+# 🧠 Build GraphQL query string with aliases and support multiple account IDs
 def build_graphql_query(batch):
     parts = []
     for i, row in enumerate(batch):
         alias = f"q{i}"
-
-        # Handle single or multiple account IDs
-        account_ids = row["accountId"]
-        if isinstance(account_ids, str):
-            account_list = [int(a.strip()) for a in account_ids.split(",")]
-        else:
-            account_list = account_ids
-
+        account_list = [int(a.strip()) for a in row["accountId"].split(",")]
         nrql = row["nrqlQuery"].replace('"', '\\"').replace('\n', ' ').replace('\r', '')
-        
+
         parts.append(f"""
             {alias}: actor {{
                 nrql(accounts: {account_list}, query: "{nrql}") {{
                     results
-                    metadata {{
-                        eventTypes
-                        facets
-                        accounts
-                    }}
+                    metadata {{ eventTypes facets accounts }}
                 }}
             }}
         """)
     return "query {\n" + "\n".join(parts) + "\n}"
 
-# Send queries and process results
+# 🔍 Send GraphQL request and determine which queries fail
 def verify_nrql_batches(batches):
     headers = {
         "Api-Key": API_KEY,
@@ -72,21 +88,19 @@ def verify_nrql_batches(batches):
 
     return results
 
-# Save output
+# 💾 Save validated results to CSV
 def save_to_csv(data, path):
-    fieldnames = list(data[0].keys())
     with open(path, mode='w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=data[0].keys())
         writer.writeheader()
         writer.writerows(data)
 
-# Main driver
+# 🚀 Main function
 def main():
-    queries = load_nrql_queries(INPUT_FILE)
-    batches = batch_queries(queries, BATCH_SIZE)
+    batches = extract_and_batch_queries(INPUT_JSON, BATCH_SIZE)
     validated = verify_nrql_batches(batches)
-    save_to_csv(validated, OUTPUT_FILE)
-    print(f"Validation complete. Output saved to: {OUTPUT_FILE}")
+    save_to_csv(validated, OUTPUT_CSV)
+    print(f"✅ Validation complete. Output written to: {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
