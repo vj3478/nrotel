@@ -1,22 +1,22 @@
 import json
 import requests
 import csv
+from pathlib import Path
 
 # Configuration
 GRAPHQL_URL = "https://api.newrelic.com/graphql"
-API_KEY = "YOUR_NEW_RELIC_API_KEY"  # Replace with your actual key
+API_KEY = "YOUR_NEW_RELIC_API_KEY"
 INPUT_JSON = "dashboard.json"
-OUTPUT_CSV = "validated_dashboard_queries.csv"
+EXTRACTED_CSV = "extracted_queries.csv"
+VALIDATED_CSV = "validated_dashboard_queries.csv"
 BATCH_SIZE = 25
 
-# ✅ Extract and batch NRQL queries from widgets (supports list of accountIds)
-def extract_and_batch_queries(json_file, batch_size=25):
+# Step 1: Extract rawConfiguration and write to CSV
+def extract_nrql_to_csv(json_file, csv_file):
     with open(json_file) as f:
         data = json.load(f)
 
-    batched = []
-    temp_batch = []
-
+    rows = []
     pages = data["data"]["actor"]["entity"].get("pages", [])
     for page in pages:
         for widget in page.get("widgets", []):
@@ -24,7 +24,7 @@ def extract_and_batch_queries(json_file, batch_size=25):
             account_id = config.get("accountId")
             queries = config.get("nrqlQueries", [])
 
-            # Convert accountId to comma-separated string if it's a list
+            # Support multiple account IDs
             if isinstance(account_id, list):
                 account_id_str = ",".join(map(str, account_id))
             else:
@@ -32,27 +32,34 @@ def extract_and_batch_queries(json_file, batch_size=25):
 
             for q in queries:
                 if "query" in q:
-                    temp_batch.append({
+                    rows.append({
                         "accountId": account_id_str,
                         "nrqlQuery": q["query"]
                     })
-                    if len(temp_batch) == batch_size:
-                        batched.append(temp_batch)
-                        temp_batch = []
 
-    if temp_batch:
-        batched.append(temp_batch)
+    if rows:
+        with open(csv_file, mode="w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
 
-    return batched
+    print(f"✅ Extracted {len(rows)} queries to {csv_file}")
 
-# 🧠 Build GraphQL query string with aliases and support multiple account IDs
+
+# Step 2: Read CSV and batch
+def load_and_batch_csv(csv_file, batch_size=25):
+    with open(csv_file, newline='') as f:
+        rows = list(csv.DictReader(f))
+    return [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
+
+
+# Step 3: Build GraphQL query
 def build_graphql_query(batch):
     parts = []
     for i, row in enumerate(batch):
         alias = f"q{i}"
         account_list = [int(a.strip()) for a in row["accountId"].split(",")]
         nrql = row["nrqlQuery"].replace('"', '\\"').replace('\n', ' ').replace('\r', '')
-
         parts.append(f"""
             {alias}: actor {{
                 nrql(accounts: {account_list}, query: "{nrql}") {{
@@ -63,13 +70,14 @@ def build_graphql_query(batch):
         """)
     return "query {\n" + "\n".join(parts) + "\n}"
 
-# 🔍 Send GraphQL request and determine which queries fail
-def verify_nrql_batches(batches):
+
+# Step 4: Validate queries
+def validate_batches(batches):
     headers = {
         "Api-Key": API_KEY,
         "Content-Type": "application/json"
     }
-    results = []
+    validated_rows = []
 
     for batch in batches:
         gql = build_graphql_query(batch)
@@ -84,23 +92,26 @@ def verify_nrql_batches(batches):
         for i, row in enumerate(batch):
             alias = f"q{i}"
             row["result"] = "failed" if alias in error_paths else row["nrqlQuery"]
-            results.append(row)
+            validated_rows.append(row)
 
-    return results
+    return validated_rows
 
-# 💾 Save validated results to CSV
-def save_to_csv(data, path):
-    with open(path, mode='w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=data[0].keys())
+
+# Step 5: Save final output
+def save_validated_to_csv(rows, output_file):
+    with open(output_file, mode='w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
-        writer.writerows(data)
+        writer.writerows(rows)
+    print(f"✅ Validation results written to: {output_file}")
 
-# 🚀 Main function
+
+# Main flow
 def main():
-    batches = extract_and_batch_queries(INPUT_JSON, BATCH_SIZE)
-    validated = verify_nrql_batches(batches)
-    save_to_csv(validated, OUTPUT_CSV)
-    print(f"✅ Validation complete. Output written to: {OUTPUT_CSV}")
+    extract_nrql_to_csv(INPUT_JSON, EXTRACTED_CSV)
+    batches = load_and_batch_csv(EXTRACTED_CSV, BATCH_SIZE)
+    validated = validate_batches(batches)
+    save_validated_to_csv(validated, VALIDATED_CSV)
 
 if __name__ == "__main__":
     main()
