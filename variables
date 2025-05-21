@@ -1,0 +1,28 @@
+import re
+
+def replace_variables_in_nrql(query, variables):
+    """
+    Replace ${variable} placeholders in NRQL with actual values.
+    Handles multiselect, ENUM, string, and quoted/unquoted substitution.
+    """
+    def replacer(match):
+        var_name = match.group(1)
+        value = variables.get(var_name, "")
+
+        # Already quoted detection
+        start = match.start()
+        already_quoted = (
+            (start > 0 and query[start - 1] in ['"', "'"]) and
+            (match.end() < len(query) and query[match.end()] in ['"', "'"])
+        )
+
+        if isinstance(value, list):
+            # Multi-select: quote each and return as comma-separated string
+            quoted = [f'"{v}"' for v in value]
+            return f"({', '.join(quoted)})"
+
+        if isinstance(value, str):
+            return value if already_quoted else f'"{value}"'
+        return str(value)
+
+    return re.sub(r"\$\{(\w+)\}", replacer, query)
