@@ -1,15 +1,11 @@
 import re
 
 def replace_variables_in_nrql(query, variables):
-    """
-    Replace ${variable} placeholders in NRQL with actual values.
-    Handles multiselect, ENUM, string, and quoted/unquoted substitution.
-    """
     def replacer(match):
         var_name = match.group(1)
         value = variables.get(var_name, "")
 
-        # Already quoted detection
+        # Detect if already quoted in the NRQL string
         start = match.start()
         already_quoted = (
             (start > 0 and query[start - 1] in ['"', "'"]) and
@@ -17,12 +13,48 @@ def replace_variables_in_nrql(query, variables):
         )
 
         if isinstance(value, list):
-            # Multi-select: quote each and return as comma-separated string
             quoted = [f'"{v}"' for v in value]
             return f"({', '.join(quoted)})"
 
         if isinstance(value, str):
             return value if already_quoted else f'"{value}"'
+
         return str(value)
 
     return re.sub(r"\$\{(\w+)\}", replacer, query)
+
+def extract_variable_values(variables_json):
+    variables = {}
+
+    for var in variables_json:
+        name = var.get("name")
+        var_type = var.get("type", "STRING")
+        multi = var.get("isMultiSelection", False)
+
+        # Collect default values
+        selected_values = [
+            val.get("value", {}).get("string", "")
+            for val in var.get("defaultValues", [])
+            if val.get("value", {}).get("string", "") != ""
+        ]
+
+        # Fallback: collect values from options (if no default values set)
+        if not selected_values:
+            options = var.get("options", {}).get("items", [])
+            for opt in options:
+                val = opt.get("value", {}).get("string", "")
+                if val:
+                    selected_values.append(val)
+                    if not multi:
+                        break  # only take one if not multi-select
+
+        # Store the final value(s)
+        if multi:
+            variables[name] = selected_values
+        else:
+            variables[name] = selected_values[0] if selected_values else ""
+
+    return variables
+
+
+
