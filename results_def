@@ -1,0 +1,27 @@
+def create_widget_update_record(
+    dashboard_guid=None,
+    dashboard_name=None,
+    page_name=None,
+    page_guid=None,
+    widget_id=None,
+    widget_name=None,
+    old_query=None,
+    variables=None,
+    new_query=None,
+    validation_result=None
+):
+    """
+    Returns a dict with default values for missing widget update fields.
+    """
+    return {
+        "dashboard_guid": dashboard_guid or "unknown",
+        "dashboard_name": dashboard_name or "unknown",
+        "page_name": page_name or "unknown",
+        "page_guid": page_guid or "unknown",
+        "widget_id": widget_id or "unknown",
+        "widget_name": widget_name or "unknown",
+        "nrql_query": old_query or "not found",
+        "variables": str(variables) if variables is not None else "none",
+        "new_nrql_query": new_query or "not generated",
+        "validation_result": validation_result if validation_result is not None else "not checked"
+    }
