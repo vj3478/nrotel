@@ -1,0 +1,5 @@
+{
+  "from Span": "FROM Metric",
+  "duration": "duration.ms",
+  "name": "service.name"
+}
