@@ -125,20 +125,17 @@ async def fetch_dashboard(guid):
 async def validate_batch(batch):
     query_parts = []
     for i, b in enumerate(batch):
-        query = b["query"]
+        query = b["query"].replace('"', '\\"').replace("\\", "\\\\")
         account_id = b["accountId"]
-        query_parts.append(f"""
+        query_parts.append(f'''
         q{i}: actor {{
             account(id: {account_id}) {{
-                nrql(query: \"{query}\") {{
+                nrql(query: "{query}") {{
                     results
                 }}
             }}
-        }}""")
-    full_query = "query {
-" + "
-".join(query_parts) + "
-}"
+        }}''')
+    full_query = "query {\n" + "\n".join(query_parts) + "\n}"
 
     async with aiohttp.ClientSession() as session:
         data = await graphql_query(session, {"query": full_query})
@@ -146,10 +143,8 @@ async def validate_batch(batch):
             return ["failed"] * len(batch)
 
         error_paths = {e["path"][0] for e in data.get("errors", [])} if "errors" in data else set()
-        results = []
-        for i in range(len(batch)):
-            results.append("failed" if f"q{i}" in error_paths else "success")
-        return results
+        return ["failed" if f"q{i}" in error_paths else "success" for i in range(len(batch))]
+
 
 async def update_dashboard_variables(dashboard_guid, variables_list):
     payload = {
