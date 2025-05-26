@@ -146,6 +146,17 @@ async def validate_batch(batch):
         return ["failed" if f"q{i}" in error_paths else "success" for i in range(len(batch))]
 
 
+UPDATE_VARIABLES_MUTATION = """
+mutation($dashboardId: EntityGuid!, $variables: [DashboardVariableInput!]!) {
+  dashboardUpdateVariables(dashboardId: $dashboardId, variables: $variables) {
+    variables {
+      name
+      defaultValues
+    }
+  }
+}
+"""
+
 async def update_dashboard_variables(dashboard_guid, variables_list):
     payload = {
         "query": UPDATE_VARIABLES_MUTATION,
@@ -156,8 +167,10 @@ async def update_dashboard_variables(dashboard_guid, variables_list):
     }
     async with aiohttp.ClientSession() as session:
         data = await graphql_query(session, payload)
-        if "errors" in data:
-            log(f"❌ Failed to update variables for {dashboard_guid}: {data['errors']}")
+        if not data or "errors" in data:
+            log(f"❌ Failed to update variables for {dashboard_guid}")
+            if data:
+                log(f"❌ Response: {json.dumps(data, indent=2)}")
             return False
         log(f"✅ Updated variables for {dashboard_guid}")
         return True
