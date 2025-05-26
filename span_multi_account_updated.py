@@ -245,16 +245,30 @@ async def run(mode, single_guid=None):
                 mapped = apply_mapping(query, mapper)
                 transformed = normalize_query(replace_variables(mapped, variables)) if mode == "validate" else normalize_query(mapped)
                 
-account_ids = cfg.get("nrqlQueries", [{}])[0].get("accountIds", [account_id])
-for aid in account_ids:
-    batch.append({
-        "query": transformed,
-        "accountId": aid,
-        "widget": widget,
-        "page": page,
-        "original": query,
-        "accountIds": account_ids
-    })
+for page in dashboard.get("pages", []):
+    for widget in page.get("widgets", []):
+        cfg = widget.get("rawConfiguration", {})
+        query = cfg.get("nrqlQueries", [{}])[0].get("query", "")
+        if "from span" not in query.lower():
+            continue
+
+        mapped = apply_mapping(query, mapper)
+        transformed = normalize_query(replace_variables(mapped, variables)) if mode == "validate" else normalize_query(mapped)
+
+        account_ids = cfg.get("nrqlQueries", [{}])[0].get("accountIds", [account_id])
+        if not isinstance(account_ids, list):
+            account_ids = [account_ids]
+
+        for aid in account_ids:
+            batch.append({
+                "query": transformed,
+                "accountId": aid,
+                "widget": widget,
+                "page": page,
+                "original": query,
+                "accountIds": account_ids
+            })
+
 
                 count_total += 1
 
