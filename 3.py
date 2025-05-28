@@ -26,17 +26,13 @@ BATCH_SIZE = 25 # Maximum number of items (validation queries or update payloads
 FORBIDDEN_WORDS = ["DELETE", "DROP", "ALTER"] # Add any other words you want to forbid
 
 # --- Helper function to execute a NerdGraph query or mutation ---
-def execute_nerdgraph_request(query, variables=None, account_ids=None):
+def execute_nerdgraph_request(query, variables=None):
     """Executes a GraphQL query or mutation against the New Relic NerdGraph API.
 
     Args:
         query (str): The GraphQL query or mutation string.
         variables (dict, optional): A dictionary of variables for the GraphQL query.
-        account_ids (list or int, optional): A single account ID (int) or a list of account IDs (list of int)
-                                             to run an NRQL query against. If None, the query is assumed
-                                             to be a general NerdGraph query not tied to a specific account
-                                             or a single-account query using the default ACCOUNT_ID if needed
-                                             by the query string itself.
+                                     This is where accountId should be passed for fetching dashboards.
 
     Returns:
         dict: The JSON response from the API, or None if an error occurred.
@@ -46,32 +42,6 @@ def execute_nerdgraph_request(query, variables=None, account_ids=None):
         "Content-Type": "application/json",
         "Api-Key": NEW_RELIC_API_KEY
     }
-
-    # Construct the actor block based on account_ids
-    actor_block = "actor {"
-    if account_ids is not None:
-        if isinstance(account_ids, list):
-            # Multi-account NRQL query
-            # The query string itself should contain the nrql(...) block
-            # e.g., "nrql(accounts: $accountIds, query: \"SELECT ...\") { results }"
-            # We assume the passed 'query' string starts within the actor block, after the account part.
-            # This requires refactoring the query templates.
-            # Let's simplify: if account_ids is provided, assume the *entire* query needs the accounts parameter
-            # within the nrql field. This means the passed 'query' should just be the NRQL string.
-            # This requires significant changes to how queries are templated and passed.
-
-            # REVISED APPROACH: Keep the query templates as they are (assuming they contain the nrql(...) block).
-            # Modify this helper to wrap the query within actor { account { ... } } or actor { ... } based on context.
-            # This is also tricky as the query template might already contain `actor { ... }`.
-
-            # Let's try a simpler approach: the caller provides the *full* query string, including `actor { ... }`.
-            # The `account_ids` parameter is used *only* to indicate that the query string *might* contain
-            # an `nrql` field that should use the `accounts: [...]` parameter instead of `account(id: ...) { nrql(...) }`.
-            # This is still not ideal as it requires complex query template management outside this function.
-
-            # Let's revert to the original plan but make execute_nrql_query handle the structure.
-            # This helper will remain generic for any GraphQL query/mutation.
-            pass # No change needed in the helper for this approach.
 
     payload = {
         "query": query,
@@ -147,65 +117,66 @@ def apply_dashboard_variables(nrql_query, variables):
     return modified_query
 
 # --- Query to fetch dashboard details and variables ---
-# We need widget IDs, their configurations (rawConfiguration or configuration)
-# to check for NRQL, the dashboard page GUID, and the dashboard variables.
+# UPDATED: Added accountId to the actor.account block for specific dashboard fetching
 get_dashboard_and_variables_query = """
-query ($guid: String!) {
+query ($guid: String!, $accountId: Int!) {
   actor {
-    entity(guid: $guid) {
-      ... on DashboardEntity {
-        name
-        owner {
-          email
-        }
-        permissions
-        pages {
-          guid
+    account(id: $accountId) { # Specify the account to fetch the dashboard from
+      entity(guid: $guid) {
+        ... on DashboardEntity {
           name
-          widgets {
-            id
-            title
-            visualization
-            layout
-            rawConfiguration
-            configuration
+          owner {
+            email
           }
-        }
-        variables {
-          name
-          type
-          title
-          default
-          required
-          defaultValues
-          source {
-            ... on DashboardVariableNrqlQuery {
-              query
-              accountIds
-              isDefault
-              results {
-                 # ADJUST THESE FIELDS based on your variable query results structure
-                 value
-                 name
-                 id
+          permissions
+          pages {
+            guid
+            name
+            widgets {
+              id
+              title
+              visualization
+              layout
+              rawConfiguration
+              configuration
+            }
+          }
+          variables {
+            name
+            type
+            title
+            default
+            required
+            defaultValues
+            source {
+              ... on DashboardVariableNrqlQuery {
+                query
+                accountIds
+                isDefault
+                results {
+                   # ADJUST THESE FIELDS based on your variable query results structure
+                   value
+                   name
+                   id
+                }
+              }
+              ... on DashboardVariableList {
+                   values {
+                       value
+                   }
+              }
+               ... on DashboardVariableEnum {
+                   values {
+                       value
+                   }
               }
             }
-            ... on DashboardVariableList {
-                 values {
-                     value
-                 }
+            values {
+               value
+               values {
+                   value
+               }
             }
-             ... on DashboardVariableEnum {
-                 values {
-                     value
-                 }
-            }
-          }
-          values {
-             value
-             values {
-                 value
-             }
           }
         }
       }
@@ -237,15 +208,14 @@ mutation ($dashboardPageGuid: String!, $widgets: [DashboardUpdateWidgetInPageInp
 # Note: Verify the exact input type name and its allowed fields for dashboardUpdateWidgetsInPage.
 
 
-def execute_nrql_query(account_id, api_key, nrql_query, account_ids=None):
+def execute_nrql_query(api_key, nrql_query, account_ids): # Removed account_id default, now always use account_ids
     """Executes an NRQL query using the New Relic NerdGraph API, supporting single or multiple accounts.
 
     Args:
-        account_id (int): The default account ID to use if account_ids is None.
         api_key (str): The New Relic API key.
         nrql_query (str): The NRQL query string.
-        account_ids (list or int, optional): A single account ID (int) or a list of account IDs (list of int)
-                                             to run the NRQL query against. If None, the default account_id is used.
+        account_ids (list or int): A single account ID (int) or a list of account IDs (list of int)
+                                    to run the NRQL query against. This parameter is now required.
 
     Returns:
         list: The list of results from the NRQL query, or None if an error occurred.
@@ -256,52 +226,28 @@ def execute_nrql_query(account_id, api_key, nrql_query, account_ids=None):
         "Content-Type": "application/json"
     }
 
-    if account_ids is None:
-        # Use single account structure
-        query = """
-            {
-              actor {
-                account(id: %d) {
-                  nrql(query: "%s") {
-                    results
-                  }
-                }
-              }
-            }
-        """ % (account_id, nrql_query.replace('"', '\\"')) # Escape double quotes in NRQL
+    # Ensure account_ids is always treated as a list for the NRQL query structure
+    if isinstance(account_ids, int):
+        accounts_list_str = str(account_ids)
     elif isinstance(account_ids, list):
-        # Use multi-account structure
-        # Ensure account_ids list is not empty
         if not account_ids:
             print("Error: account_ids list is empty for multi-account query.")
             return None
-        # Format account IDs for the query string
         accounts_list_str = ", ".join(map(str, account_ids))
-        query = """
-            {
-              actor {
-                nrql(accounts: [%s], query: "%s") {
-                  results
-                }
-              }
-            }
-        """ % (accounts_list_str, nrql_query.replace('"', '\\"')) # Escape double quotes in NRQL
-    elif isinstance(account_ids, int):
-         # Treat a single integer account_ids as a list with one element for the multi-account structure
-         # This is consistent with how the API handles it, although account(id:...) is also valid.
-         # Using the multi-account structure for a single ID ensures consistency in the query building logic here.
-         query = """
-            {
-              actor {
-                nrql(accounts: [%d], query: "%s") {
-                  results
-                }
-              }
-            }
-        """ % (account_ids, nrql_query.replace('"', '\\"')) # Escape double quotes in NRQL
     else:
-        print(f"Error: Invalid type for account_ids: {type(account_ids)}")
+        print(f"Error: Invalid type for account_ids: {type(account_ids)}. Must be int or list of int.")
         return None
+
+    query = """
+        {
+          actor {
+            nrql(accounts: [%s], query: "%s") {
+              results
+            }
+          }
+        }
+    """ % (accounts_list_str, nrql_query.replace('"', '\\"')) # Escape double quotes in NRQL
+
 
     try:
         response = requests.post(url, headers=headers, data=json.dumps({"query": query}))
@@ -310,13 +256,9 @@ def execute_nrql_query(account_id, api_key, nrql_query, account_ids=None):
         if "errors" in data:
             print(f"NRQL Query Execution Errors: {data['errors']}")
             return None
-        # Handle response structure for single vs multi-account. Multi-account results are directly under nrql.results.
-        # Single account results are under actor.account.nrql.results
-        if account_ids is None:
-             return data.get("data", {}).get("actor", {}).get("account", {}).get("nrql", {}).get("results")
-        else:
-             return data.get("data", {}).get("actor", {}).get("nrql", {}).get("results")
-
+        # Multi-account results are directly under nrql.results.
+        # Single account results using the multi-account structure will also be here.
+        return data.get("data", {}).get("actor", {}).get("nrql", {}).get("results")
 
     except requests.exceptions.RequestException as e:
         print(f"HTTP request failed during NRQL execution: {e}")
@@ -330,15 +272,14 @@ def execute_nrql_query(account_id, api_key, nrql_query, account_ids=None):
         print(f"An unexpected error occurred during NRQL execution: {e}")
         return None
 
-def validate_nrql_query(nrql_query, api_key, account_id, account_ids=None):
+def validate_nrql_query(nrql_query, api_key, target_account_ids): # Removed account_id default
     """Validates an NRQL query by attempting to execute it with LIMIT 0.
 
     Args:
         nrql_query (str): The NRQL query string.
         api_key (str): The New Relic API key.
-        account_id (int): The default account ID.
-        account_ids (list or int, optional): Account(s) to run the validation query against.
-                                             If None, uses the default account_id.
+        target_account_ids (list or int): Account(s) to run the validation query against.
+                                            This parameter is now required.
 
     Returns:
         str: "Validation Successful" or an error message.
@@ -351,7 +292,8 @@ def validate_nrql_query(nrql_query, api_key, account_id, account_ids=None):
 
     # Use the execute_nrql_query function to handle single/multi-account structure
     # Errors during execution (even with LIMIT 0) indicate syntax issues or other problems.
-    result = execute_nrql_query(account_id, api_key, validation_query, account_ids=account_ids)
+    # Pass the determined target_account_ids for validation
+    result = execute_nrql_query(api_key, validation_query, account_ids=target_account_ids)
 
     if result is not None:
         # If execute_nrql_query returned results (even an empty list for LIMIT 0), it was syntactically valid.
@@ -416,12 +358,15 @@ def main():
             page_name = "Unknown Page"
 
             # --- Step 1: Fetch the current dashboard configuration AND variables ---
-            print(f"Fetching dashboard data and variables for GUID: {dashboard_guid}")
-            # Assuming fetch_dashboard_data uses execute_nerdgraph_request correctly for entity query
-            dashboard_data_result = execute_nerdgraph_request(get_dashboard_and_variables_query, {"guid": dashboard_guid})
+            print(f"Fetching dashboard data and variables for GUID: {dashboard_guid} from account {ACCOUNT_ID}")
+            # UPDATED: Pass ACCOUNT_ID in variables for fetching the dashboard
+            dashboard_data_result = execute_nerdgraph_request(
+                get_dashboard_and_variables_query,
+                {"guid": dashboard_guid, "accountId": ACCOUNT_ID} # Pass ACCOUNT_ID here
+            )
 
-            if dashboard_data_result and dashboard_data_result.get("data") and dashboard_data_result["data"].get("actor") and dashboard_data_result["data"]["actor"].get("entity"):
-                dashboard = dashboard_data_result["data"]["actor"]["entity"]
+            if dashboard_data_result and dashboard_data_result.get("data") and dashboard_data_result["data"].get("actor") and dashboard_data_result["data"]["actor"].get("account") and dashboard_data_result["data"]["actor"]["account"].get("entity"):
+                dashboard = dashboard_data_result["data"]["actor"]["account"]["entity"] # Corrected path for dashboard object
                 dashboard_name = dashboard.get('name', 'Unknown Dashboard')
                 dashboard_owner = dashboard.get('owner', {}).get('email', 'Unknown Owner')
                 dashboard_permissions = dashboard.get('permissions') # Get dashboard permissions
@@ -527,24 +472,20 @@ def main():
 
                                 # Only process if the NRQL was actually modified (either by variable substitution or Span to Metric)
                                 if modified_nrql_query != nrql_query:
-                                     # We need to determine which accounts the original query was targeting
-                                     # This is complex. Dashboards can be multi-account via variables or explicit query syntax.
-                                     # The API fetch_dashboard_data doesn't seem to directly return accounts targeted by a widget's NRQL.
-                                     # For now, we will assume that if the dashboard has variables with accountIds defined,
-                                     # those are the intended accounts for multi-account queries in this dashboard.
-                                     # If no such variables, default to the script's main ACCOUNT_ID.
-                                     # This is an assumption and might need refinement based on how your dashboards are set up.
+                                     # Determine which accounts the original query was targeting
+                                     # This is crucial for validation.
                                      target_account_ids = None
                                      for var in dashboard.get("variables", []):
                                           if var.get("source") and var["source"].get("accountIds"):
                                                target_account_ids = var["source"]["accountIds"]
+                                               # If accountIds is a list with one element, convert to int for consistency
+                                               if isinstance(target_account_ids, list) and len(target_account_ids) == 1:
+                                                    target_account_ids = target_account_ids[0]
                                                break # Assume the first variable with accountIds determines the target accounts
 
                                      # If no accountIds found in variables, default to the main ACCOUNT_ID
                                      if target_account_ids is None:
                                           target_account_ids = ACCOUNT_ID # Use the default script account ID
-                                     elif isinstance(target_account_ids, list) and len(target_account_ids) == 1:
-                                          target_account_ids = target_account_ids[0] # If only one account ID, use the single int format
 
                                      widgets_to_process_for_dashboard.append({
                                          "dashboard_guid": dashboard_guid,
@@ -578,7 +519,7 @@ def main():
                                  widget_id = widget_data['widget_id']
                                  modified_nrql = widget_data['modified_nrql']
                                  original_nrql = widget_data['original_nrql']
-                                 target_account_ids = widget_data['target_account_ids']
+                                 target_account_ids = widget_data['target_account_ids'] # This is the key: use widget's accounts
 
                                  print(f"\nProcessing widget {widget_id} ('{widget_data.get('widget_title', 'Untitled')}') on page '{page_name}'...")
 
@@ -602,8 +543,9 @@ def main():
 
                                  if not forbidden_word_found:
                                      # --- Validate new NRQL query ---
-                                     print(f"  Validating modified NRQL query...")
-                                     validation_result = validate_nrql_query(modified_nrql, NEW_RELIC_API_KEY, ACCOUNT_ID, account_ids=target_account_ids)
+                                     print(f"  Validating modified NRQL query using account(s): {target_account_ids}...")
+                                     # UPDATED: Pass target_account_ids to validation
+                                     validation_result = validate_nrql_query(modified_nrql, NEW_RELIC_API_KEY, target_account_ids)
 
                                      if validation_result == "Validation Successful":
                                          validation_status = "Valid"
@@ -611,14 +553,16 @@ def main():
                                          print("  Validation Successful.")
 
                                          # --- Execute old and new queries and compare outputs ---
-                                         print("  Executing original and modified NRQL queries for output comparison...")
+                                         print(f"  Executing original and modified NRQL queries for output comparison using account(s): {target_account_ids}...")
                                          # Execute original query
                                          print("    Executing original query...")
-                                         old_query_output = execute_nrql_query(ACCOUNT_ID, NEW_RELIC_API_KEY, original_nrql, account_ids=target_account_ids)
+                                         # UPDATED: Pass target_account_ids to execution
+                                         old_query_output = execute_nrql_query(NEW_RELIC_API_KEY, original_nrql, account_ids=target_account_ids)
 
                                          # Execute modified query
                                          print("    Executing modified query...")
-                                         new_query_output = execute_nrql_query(ACCOUNT_ID, NEW_RELIC_API_KEY, modified_nrql, account_ids=target_account_ids)
+                                         # UPDATED: Pass target_account_ids to execution
+                                         new_query_output = execute_nrql_query(NEW_RELIC_API_KEY, modified_nrql, account_ids=target_account_ids)
 
                                          # Compare outputs
                                          if old_query_output is not None and new_query_output is not None:
