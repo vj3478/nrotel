@@ -1,0 +1,19 @@
+count from and from span in a query import re
+
+def count_exact_from_and_from_span(text):
+    # Match only whole word 'from' (not part of another word)
+    exact_from_count = len(re.findall(r'\bfrom\b', text, re.IGNORECASE))
+
+    # Match 'from' followed by any whitespace and then 'span'
+    from_span_count = len(re.findall(r'\bfrom\s+span\b', text, re.IGNORECASE))
+
+    return exact_from_count, from_span_count
+
+# Example usage:
+sample_text = """
+SELECT count(*) * 100 / (SELECT sum(nrji) AS "Total Requests" FROM Metric ...
+... FROM Span WHERE ...
+"""
+from_count, from_span_count = count_exact_from_and_from_span(sample_text)
+print(f"'from': {from_count}, 'from span': {from_span_count}")
+
