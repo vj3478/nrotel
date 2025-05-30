@@ -1,0 +1,82 @@
+extract column names 
+import re
+
+def clean_and_extract_span_columns(nrql_query: str):
+    # Normalize whitespace and lowercase 'from span' for consistency
+    query = re.sub(r'\s+', ' ', nrql_query.strip(), flags=re.MULTILINE)
+    
+    # Find the portion after "FROM Span"
+    match = re.search(r'from\s+span\b(.*?)((group\s+by|select|from|limit|order\s+by)|$)', query, re.IGNORECASE)
+    if not match:
+        return []
+
+    span_block = match.group(1)
+
+    # Fix multiple WHERE clauses: keep only the first 'WHERE', replace others with AND
+    span_block_fixed = re.sub(r'\bwhere\b', 'WHERE', span_block, count=1, flags=re.IGNORECASE)
+    span_block_fixed = re.sub(r'\bwhere\b', 'AND', span_block_fixed, flags=re.IGNORECASE)
+
+    # Extract the WHERE clause
+    where_match = re.search(r'\bWHERE\b\s+(.*)', span_block_fixed, re.IGNORECASE)
+    if not where_match:
+        return []
+
+    where_clause = where_match.group(1)
+
+    # Split on AND/OR and extract column names
+    conditions = re.split(r'\bAND\b|\bOR\b', where_clause, flags=re.IGNORECASE)
+    columns = set()
+
+    for cond in conditions:
+        left_side = re.split(r'=|!=|<>|IN|NOT IN|LIKE|>|<', cond, maxsplit=1)[0].strip()
+        column_match = re.match(r'[a-zA-Z_][\w\.]*', left_side)
+        if column_match:
+            columns.add(column_match.group(0))
+
+    return sorted(columns)
+
+example--------
+nrql = """
+SELECT count(*) * 100 / 
+  (FROM Metric 
+   SELECT sum(qsfasdf) AS 'Total Requests' 
+   WHERE backend_host = 'arbitration-driver-fafd' 
+     AND client_region = 'e1'
+  ) AS '(EAST) Message: Default Without Decay Rate' 
+FROM Span 
+WHERE (service.name = 'arbitration-fdsaf-api-safd-e') 
+  Where (name = 'arbitrate') 
+  AND (asv = 'fsafda') 
+  AND (default_score_without_decay = true) 
+  Where (contains_message = true)
+"""
+
+columns = clean_and_extract_span_columns(nrql)
+print(columns)
+
+--------
+
+check for from span in neated nrql
+
+import re
+
+def count_exact_from_and_from_span(text):
+    # Match only whole word 'from' (not part of another word)
+    exact_from_count = len(re.findall(r'\bfrom\b', text, re.IGNORECASE))
+
+    # Match 'from' followed by any whitespace and then 'span'
+    from_span_count = len(re.findall(r'\bfrom\s+span\b', text, re.IGNORECASE))
+
+    return exact_from_count, from_span_count
+
+# Example usage:
+sample_text = """
+SELECT count(*) * 100 / (SELECT sum(nrji) AS "Total Requests" FROM Metric ...
+... FROM Span WHERE ...
+"""
+from_count, from_span_count = count_exact_from_and_from_span(sample_text)
+print(f"'from': {from_count}, 'from span': {from_span_count}")
+
+--------------------
+
+
