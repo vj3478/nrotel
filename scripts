@@ -154,6 +154,7 @@ def replace_table_blocks_with_mapping(nrql, mapper):
             updated = updated.replace(block, replaced_block)
     return updated
 
+
 #####sample mapper file#####
 
 mapping = [Span: {
