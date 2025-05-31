@@ -1,4 +1,4 @@
-extract column names 
+function to extract column names 
 import re
 
 def clean_and_extract_span_columns(nrql_query: str):
@@ -77,6 +77,93 @@ SELECT count(*) * 100 / (SELECT sum(nrji) AS "Total Requests" FROM Metric ...
 from_count, from_span_count = count_exact_from_and_from_span(sample_text)
 print(f"'from': {from_count}, 'from span': {from_span_count}")
 
---------------------
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+function check if nested nrql and search/replace only for "from span"
+
+import asyncio
+import aiohttp
+import re
 
 
+def is_nested_span_query(nrql):
+    nrql_cleaned = re.sub(r'\s+', ' ', nrql.lower())
+    return nrql_cleaned.count('from span') > 1
+
+
+def extract_from_span_blocks(nrql):
+    span_blocks = []
+    for match in re.finditer(r'(from\s+span(?:.|\n)*?)(?=from\s+|$)', nrql, flags=re.IGNORECASE):
+        span_blocks.append(match.group(0))
+    return span_blocks
+
+
+def replace_span_blocks_with_mapping(nrql, mapping):
+    def replace_entire_block(block):
+        updated_block = block
+        for key, replacement in mapping.items():
+            # Escape special characters in key to safely use in regex
+            pattern = re.escape(key)
+            updated_block = re.sub(pattern, replacement, updated_block, flags=re.IGNORECASE)
+        return updated_block
+
+    updated = nrql
+    for block in extract_from_span_blocks(nrql):
+        new_block = replace_entire_block(block)
+        updated = updated.replace(block, new_block)
+    return updated
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+function to check if nested nrql and search/replace only for any table declared in the mapper file
+import asyncio
+import aiohttp
+import re
+
+
+def is_nested_span_query(nrql):
+    nrql_cleaned = re.sub(r'\s+', ' ', nrql.lower())
+    return nrql_cleaned.count('from span') > 1
+
+
+def extract_from_table_blocks(nrql):
+    blocks = []
+    pattern = r'(from\s+(\w+)(?:.|\n)*?)(?=from\s+|$)'
+    for match in re.finditer(pattern, nrql, flags=re.IGNORECASE):
+        table_name = match.group(2)
+        block = match.group(1)
+        blocks.append((table_name, block))
+    return blocks
+
+
+def replace_table_blocks_with_mapping(nrql, mapper):
+    def replace_block_fields(block, field_mapping):
+        def replacement_func(match):
+            field = match.group(0)
+            for k, v in field_mapping.items():
+                if field.lower() == k.lower():
+                    return v
+            return field
+
+        pattern = r'\b(' + '|'.join(map(re.escape, field_mapping.keys())) + r')\b'
+        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
+
+    updated = nrql
+    for table, block in extract_from_table_blocks(nrql):
+        if table in mapper:
+            replaced_block = replace_block_fields(block, mapper[table])
+            updated = updated.replace(block, replaced_block)
+    return updated
+
+#####sample mapper file#####
+
+mapping = [Span: {
+    'appName': 'service.name',
+    'env': 'deployment.environment',
+    'xyz': 'custom.dimension.xyz'
+},
+Metric: {
+	'afdads':'safda',
+	'dsdasfd':'cfafdacdaf',
+	'sfdsfdsds:'asdfdafdas
+}]
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
