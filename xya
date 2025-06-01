@@ -1,51 +1,72 @@
-import asyncio
-import aiohttp
 import re
 import json
 from pathlib import Path
 
 
-def is_nested_span_query(nrql):
-    nrql_cleaned = re.sub(r'\s+', ' ', nrql.lower())
-    return nrql_cleaned.count('from span') > 1
-
-
-def extract_from_table_blocks(nrql):
-    blocks = []
-    # support both "FROM <table>" and queries that start with "SELECT ... FROM <table>"
-    pattern = r'(select\s+[^)]*?from\s+(\w+)[^)]*?)(?=select\s+from\s+\w+|\)|$)'  # adjusted for leading SELECT
-    for match in re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL):
-        table_name = match.group(2)
-        block = match.group(1)
-        blocks.append((table_name, block))
-    return blocks
-
-
 def load_mapper_json(file_path):
-    if Path(file_path).exists():
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    return {}
+    with open(file_path, "r") as f:
+        return json.load(f)
 
 
-def replace_table_blocks_with_mapping(nrql, mapper):
-    def replace_block_fields(block, field_mapping):
-        def replacement_func(match):
-            field = match.group(0)
-            for k, v in field_mapping.items():
-                if re.fullmatch(re.escape(k), field, re.IGNORECASE):
-                    return v
-            return field
+def extract_from_blocks_multiline(nrql):
+    """
+    Extracts blocks that start with SELECT or FROM and captures the following FROM <table>
+    including multiline queries and nested structures.
+    """
+    pattern = r'(select\s+.*?\s+from\s+(\w+).*?(?=(select\s|from\s|\Z)))'
+    return re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL)
 
-        # Sort keys by length descending to prevent partial matching (e.g., 'app' vs 'appName')
-        sorted_keys = sorted(field_mapping.keys(), key=len, reverse=True)
-        # Match exact substrings and special symbols like count(*) or duration.ms*1000
-        pattern = r'(' + '|'.join(re.escape(k) for k in sorted_keys) + r')'
-        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
+
+def transform_nrql_with_mapper(nrql, mapper, table_mapper=None):
+    """
+    Transforms the NRQL query by applying field and table name mappings.
+    Handles multiline and nested queries.
+    """
+    def replace_fields(block, field_map):
+        # Sort keys to replace longer ones first, handle special characters
+        sorted_keys = sorted(field_map.keys(), key=len, reverse=True)
+        pattern = r'(?<![\w.])(' + '|'.join(re.escape(k) for k in sorted_keys) + r')(?![\w.])'
+
+        def repl(match):
+            return field_map.get(match.group(0), match.group(0))
+
+        return re.sub(pattern, repl, block, flags=re.IGNORECASE)
 
     updated = nrql
-    for table, block in extract_from_table_blocks(nrql):
+    matches = list(extract_from_blocks_multiline(nrql))
+
+    for match in matches:
+        block = match.group(1)
+        table = match.group(2)
+
         if table in mapper:
-            replaced_block = replace_block_fields(block, mapper[table])
+            replaced_block = replace_fields(block, mapper[table])
             updated = updated.replace(block, replaced_block)
+
+    # Optional table replacements (e.g., FROM Span → FROM Metric)
+    if table_mapper:
+        for old_table, new_table in table_mapper.items():
+            updated = re.sub(rf'\bfrom\s+{old_table}\b', f'FROM {new_table}', updated, flags=re.IGNORECASE)
+
     return updated
+
+
+# 🔧 EXAMPLE USAGE
+if __name__ == "__main__":
+    nrql = """
+    From Span SELECT count(*) * 100 / ( 
+      From Span SELECT count(*)  
+      WHERE appName = 'inner'
+    ) AS rate
+
+    WHERE duration.ms*1000 > 500
+    """
+
+    mapper = load_mapper_json("mapper.json")
+    table_mapper = {
+        "Span": "Metric"
+    }
+
+    updated = transform_nrql_with_mapper(nrql, mapper, table_mapper)
+    print("--- Transformed NRQL ---")
+    print(updated)
