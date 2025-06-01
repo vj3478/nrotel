@@ -1,158 +1,171 @@
-function to extract column names 
 import re
 
-def clean_and_extract_span_columns(nrql_query: str):
-    # Normalize whitespace and lowercase 'from span' for consistency
-    query = re.sub(r'\s+', ' ', nrql_query.strip(), flags=re.MULTILINE)
-    
-    # Find the portion after "FROM Span"
-    match = re.search(r'from\s+span\b(.*?)((group\s+by|select|from|limit|order\s+by)|$)', query, re.IGNORECASE)
-    if not match:
-        return []
+def update_span_query_columns(nrql_query, mapper):
+    """
+    Updates specific column names and the 'FROM Span' clause within an NRQL query
+    based on a provided mapper, specifically the mapping under the 'Span' key.
+    Handles single and nested NRQL queries, including those starting with
+    'FROM' or 'SELECT', correctly handles special characters in mapper keys,
+    and supports multiline queries. Ensures only whole words are replaced for
+    column names but replaces phrases like 'FROM Span' directly.
 
-    span_block = match.group(1)
+    Args:
+        nrql_query (str): The original NRQL query string (can be multiline).
+        mapper (dict): A dictionary containing mapping configurations.
+                       Expected structure: {'Span': {'old_value': 'new_value', ...}}
+                       The 'Span' dictionary contains the specific replacements
+                       to apply to NRQL queries originating from 'FROM Span'.
 
-    # Fix multiple WHERE clauses: keep only the first 'WHERE', replace others with AND
-    span_block_fixed = re.sub(r'\bwhere\b', 'WHERE', span_block, count=1, flags=re.IGNORECASE)
-    span_block_fixed = re.sub(r'\bwhere\b', 'AND', span_block_fixed, flags=re.IGNORECASE)
+    Returns:
+        str: The NRQL query string with specified column names and the 'FROM Span'
+             clause (if applicable and mapped) updated according to the mapper.
+             Returns the original query if inputs are invalid or no 'Span' mapping exists.
+    """
+    if not nrql_query or not isinstance(nrql_query, str) or not mapper or not isinstance(mapper, dict):
+        return nrql_query # Return original if inputs are invalid
 
-    # Extract the WHERE clause
-    where_match = re.search(r'\bWHERE\b\s+(.*)', span_block_fixed, re.IGNORECASE)
-    if not where_match:
-        return []
+    span_mapper = mapper.get("Span")
 
-    where_clause = where_match.group(1)
+    if not span_mapper or not isinstance(span_mapper, dict):
+        return nrql_query # No 'Span' mapping found or it's invalid
 
-    # Split on AND/OR and extract column names
-    conditions = re.split(r'\bAND\b|\bOR\b', where_clause, flags=re.IGNORECASE)
-    columns = set()
+    modified_query = nrql_query
 
-    for cond in conditions:
-        left_side = re.split(r'=|!=|<>|IN|NOT IN|LIKE|>|<', cond, maxsplit=1)[0].strip()
-        column_match = re.match(r'[a-zA-Z_][\w\.]*', left_side)
-        if column_match:
-            columns.add(column_match.group(0))
+    # Create a mutable copy of the mapper to handle the special "From Span" key separately
+    span_mapper_copy = span_mapper.copy()
 
-    return sorted(columns)
+    # --- Handle the special "From Span" replacement first (case-insensitive and multiline) ---
+    # Check if "From Span" is a key in the mapper and apply its replacement
+    # Find the actual key in the mapper that matches "From Span" case-insensitively
+    from_span_old_value = "From Span"
+    from_span_key_in_mapper = None
+    for key in span_mapper_copy:
+        if key.lower() == from_span_old_value.lower():
+            from_span_key_in_mapper = key
+            break
 
-example--------
-nrql = """
-SELECT count(*) * 100 / 
-  (FROM Metric 
-   SELECT sum(qsfasdf) AS 'Total Requests' 
-   WHERE backend_host = 'arbitration-driver-fafd' 
-     AND client_region = 'e1'
-  ) AS '(EAST) Message: Default Without Decay Rate' 
-FROM Span 
-WHERE (service.name = 'arbitration-fdsaf-api-safd-e') 
-  Where (name = 'arbitrate') 
-  AND (asv = 'fsafda') 
-  AND (default_score_without_decay = true) 
-  Where (contains_message = true)
+    if from_span_key_in_mapper:
+        from_span_new_value = span_mapper_copy.pop(from_span_key_in_mapper)
+        # Use re.sub with IGNORECASE and DOTALL flags for "From Span"
+        # Construct pattern that accounts for potential whitespace variations around "From" and "Span"
+        pattern = re.compile(r"from\s+span", re.IGNORECASE | re.DOTALL)
+        # Use the compiled pattern, do not pass flags to re.sub
+        modified_query = re.sub(pattern, from_span_new_value, modified_query)
+
+
+    # --- Handle other column/value replacements with word boundaries (case-insensitive and multiline) ---
+    # Sort remaining keys (old column names/values) by length in descending order
+    # to handle cases where one name/value is a substring of another.
+    sorted_old_values = sorted(span_mapper_copy.keys(), key=len, reverse=True)
+
+    for old_value in sorted_old_values:
+        new_value = span_mapper_copy[old_value]
+
+        # Escape special characters in the old value for regex
+        escaped_old_value = re.escape(old_value)
+
+        # Create a regex pattern to match the escaped old value
+        # \b ensures word boundaries, so 'id' doesn't match part of 'instance.id'
+        # Use a raw string for the pattern
+        # Need to be careful with "count(*)" - \b around * is not correct
+        if old_value == "count(*)":
+             pattern = r"count\(\*\)" # Specific pattern for count(*)
+        elif old_value == "duration.ms*1000":
+             pattern = r"duration\.ms\*1000" # Specific pattern for duration.ms*1000, escaping . and *
+        else:
+             pattern = r"\b" + escaped_old_value + r"\b"
+
+        # Use re.sub with IGNORECASE and DOTALL flags
+        modified_query = re.sub(pattern, str(new_value), modified_query, flags=re.IGNORECASE | re.DOTALL) # Convert new_value to string
+
+
+    return modified_query
+
+# Example Usage:
+mapper = {
+    "Span": {
+        "appName": "service.name",
+        "env": "deployment.environment",
+        "xyz": "custom.dimension.xyz",
+        "count(*)": "http.request.count", # Corrected example key
+        "duration.ms*1000": "http.duration",
+        "From Span": "From Metric" # This specific replacement is handled first
+    },
+    "OtherTable": {
+        # Other mappings if needed
+    }
+}
+
+# Example nested query from previous turn
+nrql_nested_prev = "SELECT count(*) FROM (SELECT appName, duration.ms*1000 FROM Span WHERE env = 'prod') WHERE appName = 'myService' FACET env, xyz"
+updated_nrql_nested_prev = update_span_query_columns(nrql_nested_prev, mapper)
+print(f"Original Nested (Prev): {nrql_nested_prev}")
+print(f"Updated Nested (Prev):  {updated_nrql_nested_prev}")
+
+print("-" * 20)
+
+# Example simple query
+nrql_simple = "SELECT duration.ms*1000 AS durationMs, appName FROM Span WHERE appName LIKE '%service%' AND env = 'dev'"
+updated_nrql_simple = update_span_query_columns(nrql_simple, mapper)
+print(f"Original Simple: {nrql_simple}")
+print(f"Updated Simple:  {updated_nrql_simple}")
+
+print("-" * 20)
+
+# Example query with different casing
+nrql_casing = "select AppName, XyZ from span where ENV = 'staging'"
+updated_nrql_casing = update_span_query_columns(nrql_casing, mapper)
+print(f"Original Casing: {nrql_casing}")
+print(f"Updated Casing:  {updated_nrql_casing}")
+
+print("-" * 20)
+
+# Example query with no Span
+nrql_no_span = "SELECT count(*) FROM Transaction WHERE appName = 'myService'"
+updated_nrql_no_span = update_span_query_columns(nrql_no_span, mapper)
+print(f"Original No Span: {nrql_no_span}")
+print(f"Updated No Span:  {updated_nrql_no_span}")
+
+print("-" * 20)
+
+# Example with mapper having special characters as keys (already handled by re.escape)
+mapper_special_chars = {
+    "Span": {
+        "http.statusCode": "httpResponseStatusCode",
+        "user.id": "userId",
+        "complex-name!@#": "simple_name",
+        "From Span": "FROM NewMetricTable"
+    }
+}
+
+nrql_special = "SELECT http.statusCode, user.id, complex-name!@# FROM Span WHERE user.id = '123'"
+updated_nrql_special = update_span_query_columns(nrql_special, mapper_special_chars)
+print(f"Original Special: {nrql_special}")
+print(f"Updated Special:  {updated_nrql_special}")
+
+print("-" * 20)
+
+# Example with user provided query starting with "From Span"
+nrql_user_provided = "From   Span SELECT count(*) where entity.name=(SELECT appName, duration.ms*1000 FROM Span WHERE env = 'prod') WHERE appName = 'myService' FACET env, xyz"
+updated_nrql_user_provided = update_span_query_columns(nrql_user_provided, mapper)
+print(f"Original User Provided: {nrql_user_provided}")
+print(f"Updated User Provided:  {updated_nrql_user_provided}")
+
+print("-" * 20)
+
+# New example query provided by the user (multiline with special chars)
+nrql_multiline = """
+From Span
+SELECT count(*)
+FROM (
+    SELECT appName, duration.ms*1000
+    FROM Span
+    WHERE env = 'prod'
+    AND count(*) = 'safdas' -- Example with special char in value and multiline
+)
+WHERE appName = 'myService'
+FACET env, xyz!
 """
-
-columns = clean_and_extract_span_columns(nrql)
-print(columns)
-
---------
-
-check for from span in neated nrql
-
-import re
-
-def count_exact_from_and_from_span(text):
-    # Match only whole word 'from' (not part of another word)
-    exact_from_count = len(re.findall(r'\bfrom\b', text, re.IGNORECASE))
-
-    # Match 'from' followed by any whitespace and then 'span'
-    from_span_count = len(re.findall(r'\bfrom\s+span\b', text, re.IGNORECASE))
-
-    return exact_from_count, from_span_count
-
-# Example usage:
-sample_text = """
-SELECT count(*) * 100 / (SELECT sum(nrji) AS "Total Requests" FROM Metric ...
-... FROM Span WHERE ...
-"""
-from_count, from_span_count = count_exact_from_and_from_span(sample_text)
-print(f"'from': {from_count}, 'from span': {from_span_count}")
-
---------------------------------------------------------------------------------------------------------------------------------------------
-
-function check if nested nrql and search/replace only for "from span"
-
-import asyncio
-import aiohttp
-import re
-
-
-def is_nested_span_query(nrql):
-    nrql_cleaned = re.sub(r'\s+', ' ', nrql.lower())
-    return nrql_cleaned.count('from span') > 1
-
-
-def extract_from_span_blocks(nrql):
-    span_blocks = []
-    for match in re.finditer(r'(from\s+span(?:.|\n)*?)(?=from\s+|$)', nrql, flags=re.IGNORECASE):
-        span_blocks.append(match.group(0))
-    return span_blocks
-
-
-def replace_span_blocks_with_mapping(nrql, mapping):
-    def replace_entire_block(block):
-        updated_block = block
-        for key, replacement in mapping.items():
-            # Escape special characters in key to safely use in regex
-            pattern = re.escape(key)
-            updated_block = re.sub(pattern, replacement, updated_block, flags=re.IGNORECASE)
-        return updated_block
-
-    updated = nrql
-    for block in extract_from_span_blocks(nrql):
-        new_block = replace_entire_block(block)
-        updated = updated.replace(block, new_block)
-    return updated
-
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-function to check if nested nrql and search/replace only for any table declared in the mapper file
-import asyncio
-import aiohttp
-import re
-
-
-def is_nested_span_query(nrql):
-    nrql_cleaned = re.sub(r'\s+', ' ', nrql.lower())
-    return nrql_cleaned.count('from span') > 1
-
-
-def extract_from_table_blocks(nrql):
-    blocks = []
-    pattern = r'(from\s+(\w+)[^)]*?)(?=from\s+\w+|\)|$)'  # more accurate table detection across nested blocks
-    for match in re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL):
-        table_name = match.group(2)
-        block = match.group(1)
-        blocks.append((table_name, block))
-    return blocks
-
-
-def replace_table_blocks_with_mapping(nrql, mapper):
-    def replace_block_fields(block, field_mapping):
-        def replacement_func(match):
-            field = match.group(0)
-            for k, v in field_mapping.items():
-                if field.lower() == k.lower():
-                    return v
-            return field
-
-        # Sort keys by length descending to prevent partial matching (e.g., 'app' vs 'appName')
-        sorted_keys = sorted(field_mapping.keys(), key=len, reverse=True)
-        # Match words or symbols like count(*) or duration.ms*1000
-        pattern = r'(?<!\w)(' + '|'.join(re.escape(k) for k in sorted_keys) + r')(?!\w)'
-        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
-
-    updated = nrql
-    for table, block in extract_from_table_blocks(nrql):
-        if table in mapper:
-            replaced_block = replace_block_fields(block, mapper[table])
-            updated = updated.replace(block, replaced_block)
-    return updated
+updated_nrql_multiline = update_span_query_columns(nrql_multiline, mapper)
+print(f"Original Multiline:\n{nrql_multiline}")
+print(f"Updated Multiline:\n{updated_nrql_multiline}")
