@@ -232,22 +232,30 @@ jjdjjdnd
 
 import re
 
-def extract_select_from_blocks(nrql: str):
+def extract_select_and_from_blocks(nrql: str):
     """
-    Extracts all SELECT ... FROM <table> ... blocks from the NRQL query.
-    Supports nested and flat queries, and SELECT/FROM at any position.
-    Returns a list of (table_name, block_text).
+    Extracts SELECT ... FROM <table> ... and FROM <table> SELECT ... blocks.
+    Returns list of (table_name, full_block) tuples.
     """
     blocks = []
     cleaned = ' '.join(nrql.strip().split())
 
-    # Regex pattern to find SELECT ... FROM <table> blocks
-    pattern = r'(SELECT\s+.*?\s+FROM\s+(\w+).*?)(?=(SELECT\s+|FROM\s+|$))'
-    matches = re.finditer(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL)
+    # Pattern 1: SELECT ... FROM <table>
+    pattern_select = r'(SELECT\s+.*?\s+FROM\s+(\w+).*?)(?=(SELECT\s+|FROM\s+|$))'
+    matches_select = re.finditer(pattern_select, cleaned, flags=re.IGNORECASE | re.DOTALL)
 
-    for match in matches:
-        full_block = match.group(1).strip()
+    for match in matches_select:
         table_name = match.group(2).strip()
+        full_block = match.group(1).strip()
+        blocks.append((table_name, full_block))
+
+    # Pattern 2: FROM <table> SELECT ...
+    pattern_from = r'(FROM\s+(\w+)\s+SELECT\s+.*?)(?=(SELECT\s+|FROM\s+|$))'
+    matches_from = re.finditer(pattern_from, cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    for match in matches_from:
+        table_name = match.group(2).strip()
+        full_block = match.group(1).strip()
         blocks.append((table_name, full_block))
 
     return blocks
@@ -255,17 +263,17 @@ def extract_select_from_blocks(nrql: str):
 
 def replace_fields_in_block(block: str, field_mapping: dict) -> str:
     """
-    Replaces fields inside a SQL/NRQL block using the given mapping.
-    Handles special characters and case-insensitive matching.
+    Replaces fields in the given block using field_mapping.
+    Safely handles special characters and is case-insensitive.
     """
-    sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))  # longest match first
+    sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))  # prioritize longest match
     pattern = '|'.join(re.escape(k) for k in sorted_keys)
 
     def replacement_func(match):
         original = match.group(0)
-        for key, value in field_mapping.items():
-            if original.lower() == key.lower():
-                return value
+        for k, v in field_mapping.items():
+            if original.lower() == k.lower():
+                return v
         return original
 
     return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
@@ -273,22 +281,20 @@ def replace_fields_in_block(block: str, field_mapping: dict) -> str:
 
 def replace_fields_nested_and_scoped_regex(nrql: str, mapper: dict) -> str:
     """
-    Replaces fields in a NRQL query based on a mapping of fields scoped by table name.
-    Only modifies blocks matching SELECT ... FROM <table> for tables in the mapper.
+    Replaces fields in a NRQL query based on a scoped mapper: { table_name: { field: replacement } }.
+    Works for both SELECT ... FROM and FROM ... SELECT formats. Only replaces inside scoped blocks.
     """
-    cleaned = ' '.join(nrql.strip().split())  # normalize spacing
+    cleaned = ' '.join(nrql.strip().split())
     updated = cleaned
     replacements = []
 
-    # Extract all SELECT-FROM blocks with table name
-    table_blocks = extract_select_from_blocks(cleaned)
+    table_blocks = extract_select_and_from_blocks(cleaned)
 
     for table_name, block in table_blocks:
         if table_name in mapper:
             replaced_block = replace_fields_in_block(block, mapper[table_name])
             replacements.append((block, replaced_block))
 
-    # Apply each replacement in the cleaned query
     for original, replaced in replacements:
         updated = updated.replace(original, replaced)
 
