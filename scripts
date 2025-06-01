@@ -227,15 +227,36 @@ def replace_table_blocks_with_mapping(nrql, mapper):
     return updated
 
 --------------------------------------------------------------------------------------------------------
-jdjfjjfkjf
+jjdjjdnd
 
 
 import re
 
+def extract_select_from_blocks(nrql: str):
+    """
+    Extracts all SELECT ... FROM <table> ... blocks from the NRQL query.
+    Supports nested and flat queries, and SELECT/FROM at any position.
+    Returns a list of (table_name, block_text).
+    """
+    blocks = []
+    cleaned = ' '.join(nrql.strip().split())
+
+    # Regex pattern to find SELECT ... FROM <table> blocks
+    pattern = r'(SELECT\s+.*?\s+FROM\s+(\w+).*?)(?=(SELECT\s+|FROM\s+|$))'
+    matches = re.finditer(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    for match in matches:
+        full_block = match.group(1).strip()
+        table_name = match.group(2).strip()
+        blocks.append((table_name, full_block))
+
+    return blocks
+
+
 def replace_fields_in_block(block: str, field_mapping: dict) -> str:
     """
-    Replaces fields inside a given SQL/NRQL block using the mapping dictionary.
-    Handles special characters and uses case-insensitive matching.
+    Replaces fields inside a SQL/NRQL block using the given mapping.
+    Handles special characters and case-insensitive matching.
     """
     sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))  # longest match first
     pattern = '|'.join(re.escape(k) for k in sorted_keys)
@@ -252,31 +273,27 @@ def replace_fields_in_block(block: str, field_mapping: dict) -> str:
 
 def replace_fields_nested_and_scoped_regex(nrql: str, mapper: dict) -> str:
     """
-    Replaces fields in a NRQL string based on the associated table mappings in `mapper`.
-    Only fields in SELECT ... FROM <table> ... blocks are replaced.
-    Works for nested queries and queries that begin with SELECT or FROM.
+    Replaces fields in a NRQL query based on a mapping of fields scoped by table name.
+    Only modifies blocks matching SELECT ... FROM <table> for tables in the mapper.
     """
-    cleaned = ' '.join(nrql.strip().split())  # normalize spaces
+    cleaned = ' '.join(nrql.strip().split())  # normalize spacing
     updated = cleaned
     replacements = []
 
-    # Match SELECT ... FROM <table> ... until next SELECT, FROM or end
-    pattern = r'(SELECT\s+.*?\s+FROM\s+(\w+).*?)(?=(SELECT\s+|FROM\s+|$))'
-    matches = re.finditer(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL)
+    # Extract all SELECT-FROM blocks with table name
+    table_blocks = extract_select_from_blocks(cleaned)
 
-    for match in matches:
-        full_block = match.group(1)
-        table_name = match.group(2)
-
+    for table_name, block in table_blocks:
         if table_name in mapper:
-            replaced_block = replace_fields_in_block(full_block, mapper[table_name])
-            replacements.append((full_block, replaced_block))
+            replaced_block = replace_fields_in_block(block, mapper[table_name])
+            replacements.append((block, replaced_block))
 
-    # Apply all replacements
+    # Apply each replacement in the cleaned query
     for original, replaced in replacements:
         updated = updated.replace(original, replaced)
 
     return updated
+
 
 
 bcndbnd
