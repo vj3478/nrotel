@@ -301,5 +301,64 @@ def replace_fields_nested_and_scoped_regex(nrql: str, mapper: dict) -> str:
     return updated
 
 
+ififjfjjf
+
+
+
+
+nfjfjjfjdjjf
+
+
+
+
+import re
+
+def migrate_span_to_metric_full(nrql: str, span_to_metric_mapper: dict) -> str:
+    """
+    Converts NRQL queries using FROM Span to FROM Metric and applies mapping to known fields.
+    Only modifies blocks from the Span table and leaves other table blocks untouched.
+    Supports:
+    - SELECT ... FROM Span ...
+    - FROM Span SELECT ...
+    - WHERE and AND clause mappings
+    """
+    cleaned = ' '.join(nrql.strip().split())  # normalize spacing
+    updated = cleaned
+
+    # Match SELECT ... FROM Span ... or FROM Span SELECT ...
+    pattern = r'((SELECT\s+.*?\s+FROM\s+Span\s+.*?)(?=(SELECT\s+|FROM\s+|$))|(FROM\s+Span\s+SELECT\s+.*?)(?=(SELECT\s+|FROM\s+|$)))'
+    matches = re.finditer(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    replacements = []
+
+    for match in matches:
+        full_block = match.group(0)
+
+        # Replace FROM Span → FROM Metric
+        metric_block = re.sub(r'\bFROM\s+Span\b', 'FROM Metric', full_block, flags=re.IGNORECASE)
+
+        # Build regex pattern for mapping keys
+        sorted_keys = sorted(span_to_metric_mapper.keys(), key=lambda k: -len(k))
+        pattern_fields = '|'.join(re.escape(k) for k in sorted_keys)
+
+        def replacement_func(m):
+            field = m.group(0)
+            for k, v in span_to_metric_mapper.items():
+                if field.strip().lower() == k.strip().lower():
+                    return v
+            return field
+
+        # Replace all mapped fields within the Span block
+        replaced_block = re.sub(pattern_fields, replacement_func, metric_block, flags=re.IGNORECASE)
+        replacements.append((full_block, replaced_block))
+
+    # Apply all replacements to the full query
+    for original, replaced in replacements:
+        updated = updated.replace(original, replaced)
+
+    return updated
+
+
+
 
 bcndbnd
