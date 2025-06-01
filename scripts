@@ -227,3 +227,56 @@ def replace_table_blocks_with_mapping(nrql, mapper):
     return updated
 
 --------------------------------------------------------------------------------------------------------
+jdjfjjfkjf
+
+
+import re
+
+def replace_fields_in_block(block: str, field_mapping: dict) -> str:
+    """
+    Replaces fields inside a given SQL/NRQL block using the mapping dictionary.
+    Handles special characters and uses case-insensitive matching.
+    """
+    sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))  # longest match first
+    pattern = '|'.join(re.escape(k) for k in sorted_keys)
+
+    def replacement_func(match):
+        original = match.group(0)
+        for key, value in field_mapping.items():
+            if original.lower() == key.lower():
+                return value
+        return original
+
+    return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
+
+
+def replace_fields_nested_and_scoped_regex(nrql: str, mapper: dict) -> str:
+    """
+    Replaces fields in a NRQL string based on the associated table mappings in `mapper`.
+    Only fields in SELECT ... FROM <table> ... blocks are replaced.
+    Works for nested queries and queries that begin with SELECT or FROM.
+    """
+    cleaned = ' '.join(nrql.strip().split())  # normalize spaces
+    updated = cleaned
+    replacements = []
+
+    # Match SELECT ... FROM <table> ... until next SELECT, FROM or end
+    pattern = r'(SELECT\s+.*?\s+FROM\s+(\w+).*?)(?=(SELECT\s+|FROM\s+|$))'
+    matches = re.finditer(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    for match in matches:
+        full_block = match.group(1)
+        table_name = match.group(2)
+
+        if table_name in mapper:
+            replaced_block = replace_fields_in_block(full_block, mapper[table_name])
+            replacements.append((full_block, replaced_block))
+
+    # Apply all replacements
+    for original, replaced in replacements:
+        updated = updated.replace(original, replaced)
+
+    return updated
+
+
+bcndbnd
