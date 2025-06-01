@@ -67,6 +67,7 @@ def update_span_query_columns(nrql_query, mapper):
         # Create a regex pattern to match the escaped old value
         # \b ensures word boundaries, so 'id' doesn't match part of 'instance.id'
         # Use a raw string for the pattern
+        # Perform case-insensitive replacement for robustness, adjust if strict case is needed
         # Need to be careful with "count(*)" - \b around * is not correct
         if old_value == "count(*)":
              pattern = r"count\(\*\)" # Specific pattern for count(*)
@@ -153,7 +154,7 @@ print(f"Updated User Provided:  {updated_nrql_user_provided}")
 
 print("-" * 20)
 
-# New example query provided by the user (multiline with special chars)
+# Example multiline query
 nrql_multiline = """
 From Span
 SELECT count(*)
@@ -169,3 +170,14 @@ FACET env, xyz!
 updated_nrql_multiline = update_span_query_columns(nrql_multiline, mapper)
 print(f"Original Multiline:\n{nrql_multiline}")
 print(f"Updated Multiline:\n{updated_nrql_multiline}")
+
+print("-" * 20)
+
+# New example query from user
+nrql_new_user_query = """
+Select count(*)*100/(select sum(abc.yx) from Metric wehre bd_host='asdds' AND client_region=''e1')
+From Span where entity.name='afdasfafsa' and name='sadfdsafd' and asv='asdfda'
+"""
+updated_nrql_new_user_query = update_span_query_columns(nrql_new_user_query, mapper)
+print(f"Original New User Query:\n{nrql_new_user_query}")
+print(f"Updated New User Query:\n{updated_nrql_new_user_query}")
