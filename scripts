@@ -167,4 +167,63 @@ Metric: {
 	'dsdasfd':'cfafdacdaf',
 	'sfdsfdsds:'asdfdafdas
 }]
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------
+import re
+
+def extract_from_table_blocks(nrql):
+    """
+    Extracts each FROM <table> ... block from the NRQL.
+    Returns a list of (table_name, block_text) tuples.
+    """
+    blocks = []
+    pattern = r'(from\s+(\w+)(?:[^;]*?))(?=(?:from\s+\w+)|$)'  # captures each FROM <table> ... block
+    for match in re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL):
+        block = match.group(1)
+        table_name = match.group(2)
+        blocks.append((table_name, block))
+    return blocks
+
+
+def replace_table_blocks_with_mapping(nrql, mapper):
+    """
+    Replace fields in each FROM <table> block using the field mappings provided in mapper.
+    Supports special characters in both keys and values.
+    """
+    def replace_block_fields(block, field_mapping):
+        """
+        Replaces fields inside a block using the field mapping dictionary.
+        Handles special characters like *, (, ), ., etc.
+        """
+        print("Processing block:", block)
+        print("Field mapping:", field_mapping)
+
+        # Sort keys longest first and escape them for regex
+        sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))
+        escaped_keys = [re.escape(k) for k in sorted_keys]
+        pattern = '|'.join(escaped_keys)
+        print(f"Regex pattern: {pattern}")
+
+        def replacement_func(match):
+            field = match.group(0)
+            for k, v in field_mapping.items():
+                if field.lower() == k.lower():
+                    print(f"Replacing {field} with {v}")
+                    return v
+            return field  # fallback
+
+        # Apply replacement
+        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
+
+    updated = nrql
+
+    # Extract and replace in each FROM block
+    for table, block in extract_from_table_blocks(nrql):
+        if table in mapper:
+            print("Table found in mapper:", table)
+            replaced_block = replace_block_fields(block, mapper[table])
+            updated = updated.replace(block, replaced_block)
+            print("Updated NRQL block:", replaced_block)
+
+    return updated
+
+--------------------------------------------------------------------------------------------------------
