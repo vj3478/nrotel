@@ -127,238 +127,32 @@ def is_nested_span_query(nrql):
 
 def extract_from_table_blocks(nrql):
     blocks = []
-    pattern = r'(from\s+(\w+)(?:.|\n)*?)(?=from\s+|$)'
-    for match in re.finditer(pattern, nrql, flags=re.IGNORECASE):
-        table_name = match.group(2)
-        block = match.group(1)
-        blocks.append((table_name, block))
-    return blocks
-
-
-def replace_table_blocks_with_mapping(nrql, mapper):
-    def replace_block_fields(block, field_mapping):
-        def replacement_func(match):
-            field = match.group(0)
-            for k, v in field_mapping.items():
-                if field.lower() == k.lower():
-                    return v
-            return field
-
-        pattern = r'\b(' + '|'.join(map(re.escape, field_mapping.keys())) + r')\b'
-        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
-
-    updated = nrql
-    for table, block in extract_from_table_blocks(nrql):
-        if table in mapper:
-            replaced_block = replace_block_fields(block, mapper[table])
-            updated = updated.replace(block, replaced_block)
-    return updated
-
-
-#####sample mapper file#####
-
-mapping = [Span: {
-    'appName': 'service.name',
-    'env': 'deployment.environment',
-    'xyz': 'custom.dimension.xyz'
-},
-Metric: {
-	'afdads':'safda',
-	'dsdasfd':'cfafdacdaf',
-	'sfdsfdsds:'asdfdafdas
-}]
-----------------------------------------------------------------------------------------------------------
-import re
-
-def extract_from_table_blocks(nrql):
-    """
-    Extracts each FROM <table> ... block from the NRQL.
-    Returns a list of (table_name, block_text) tuples.
-    """
-    blocks = []
-    pattern = r'(from\s+(\w+)(?:[^;]*?))(?=(?:from\s+\w+)|$)'  # captures each FROM <table> ... block
+    pattern = r'(from\s+(\w+)[^)]*?)(?=from\s+\w+|\)|$)'  # more accurate table detection across nested blocks
     for match in re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL):
-        block = match.group(1)
         table_name = match.group(2)
+        block = match.group(1)
         blocks.append((table_name, block))
     return blocks
 
 
 def replace_table_blocks_with_mapping(nrql, mapper):
-    """
-    Replace fields in each FROM <table> block using the field mappings provided in mapper.
-    Supports special characters in both keys and values.
-    """
     def replace_block_fields(block, field_mapping):
-        """
-        Replaces fields inside a block using the field mapping dictionary.
-        Handles special characters like *, (, ), ., etc.
-        """
-        print("Processing block:", block)
-        print("Field mapping:", field_mapping)
-
-        # Sort keys longest first and escape them for regex
-        sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))
-        escaped_keys = [re.escape(k) for k in sorted_keys]
-        pattern = '|'.join(escaped_keys)
-        print(f"Regex pattern: {pattern}")
-
         def replacement_func(match):
             field = match.group(0)
             for k, v in field_mapping.items():
                 if field.lower() == k.lower():
-                    print(f"Replacing {field} with {v}")
-                    return v
-            return field  # fallback
-
-        # Apply replacement
-        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
-
-    updated = nrql
-
-    # Extract and replace in each FROM block
-    for table, block in extract_from_table_blocks(nrql):
-        if table in mapper:
-            print("Table found in mapper:", table)
-            replaced_block = replace_block_fields(block, mapper[table])
-            updated = updated.replace(block, replaced_block)
-            print("Updated NRQL block:", replaced_block)
-
-    return updated
-
---------------------------------------------------------------------------------------------------------
-jjdjjdnd
-
-
-import re
-
-def extract_select_and_from_blocks(nrql: str):
-    """
-    Extracts SELECT ... FROM <table> ... and FROM <table> SELECT ... blocks.
-    Returns list of (table_name, full_block) tuples.
-    """
-    blocks = []
-    cleaned = ' '.join(nrql.strip().split())
-
-    # Pattern 1: SELECT ... FROM <table>
-    pattern_select = r'(SELECT\s+.*?\s+FROM\s+(\w+).*?)(?=(SELECT\s+|FROM\s+|$))'
-    matches_select = re.finditer(pattern_select, cleaned, flags=re.IGNORECASE | re.DOTALL)
-
-    for match in matches_select:
-        table_name = match.group(2).strip()
-        full_block = match.group(1).strip()
-        blocks.append((table_name, full_block))
-
-    # Pattern 2: FROM <table> SELECT ...
-    pattern_from = r'(FROM\s+(\w+)\s+SELECT\s+.*?)(?=(SELECT\s+|FROM\s+|$))'
-    matches_from = re.finditer(pattern_from, cleaned, flags=re.IGNORECASE | re.DOTALL)
-
-    for match in matches_from:
-        table_name = match.group(2).strip()
-        full_block = match.group(1).strip()
-        blocks.append((table_name, full_block))
-
-    return blocks
-
-
-def replace_fields_in_block(block: str, field_mapping: dict) -> str:
-    """
-    Replaces fields in the given block using field_mapping.
-    Safely handles special characters and is case-insensitive.
-    """
-    sorted_keys = sorted(field_mapping.keys(), key=lambda k: -len(k))  # prioritize longest match
-    pattern = '|'.join(re.escape(k) for k in sorted_keys)
-
-    def replacement_func(match):
-        original = match.group(0)
-        for k, v in field_mapping.items():
-            if original.lower() == k.lower():
-                return v
-        return original
-
-    return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
-
-
-def replace_fields_nested_and_scoped_regex(nrql: str, mapper: dict) -> str:
-    """
-    Replaces fields in a NRQL query based on a scoped mapper: { table_name: { field: replacement } }.
-    Works for both SELECT ... FROM and FROM ... SELECT formats. Only replaces inside scoped blocks.
-    """
-    cleaned = ' '.join(nrql.strip().split())
-    updated = cleaned
-    replacements = []
-
-    table_blocks = extract_select_and_from_blocks(cleaned)
-
-    for table_name, block in table_blocks:
-        if table_name in mapper:
-            replaced_block = replace_fields_in_block(block, mapper[table_name])
-            replacements.append((block, replaced_block))
-
-    for original, replaced in replacements:
-        updated = updated.replace(original, replaced)
-
-    return updated
-
-
-ififjfjjf
-
-
-
-
-nfjfjjfjdjjf
-
-
-
-
-import re
-
-def migrate_span_to_metric_full(nrql: str, span_to_metric_mapper: dict) -> str:
-    """
-    Converts NRQL queries using FROM Span to FROM Metric and applies mapping to known fields.
-    Only modifies blocks from the Span table and leaves other table blocks untouched.
-    Supports:
-    - SELECT ... FROM Span ...
-    - FROM Span SELECT ...
-    - WHERE and AND clause mappings
-    """
-    cleaned = ' '.join(nrql.strip().split())  # normalize spacing
-    updated = cleaned
-
-    # Match SELECT ... FROM Span ... or FROM Span SELECT ...
-    pattern = r'((SELECT\s+.*?\s+FROM\s+Span\s+.*?)(?=(SELECT\s+|FROM\s+|$))|(FROM\s+Span\s+SELECT\s+.*?)(?=(SELECT\s+|FROM\s+|$)))'
-    matches = re.finditer(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL)
-
-    replacements = []
-
-    for match in matches:
-        full_block = match.group(0)
-
-        # Replace FROM Span → FROM Metric
-        metric_block = re.sub(r'\bFROM\s+Span\b', 'FROM Metric', full_block, flags=re.IGNORECASE)
-
-        # Build regex pattern for mapping keys
-        sorted_keys = sorted(span_to_metric_mapper.keys(), key=lambda k: -len(k))
-        pattern_fields = '|'.join(re.escape(k) for k in sorted_keys)
-
-        def replacement_func(m):
-            field = m.group(0)
-            for k, v in span_to_metric_mapper.items():
-                if field.strip().lower() == k.strip().lower():
                     return v
             return field
 
-        # Replace all mapped fields within the Span block
-        replaced_block = re.sub(pattern_fields, replacement_func, metric_block, flags=re.IGNORECASE)
-        replacements.append((full_block, replaced_block))
+        # Sort keys by length descending to prevent partial matching (e.g., 'app' vs 'appName')
+        sorted_keys = sorted(field_mapping.keys(), key=len, reverse=True)
+        # Match words or symbols like count(*) or duration.ms*1000
+        pattern = r'(?<!\w)(' + '|'.join(re.escape(k) for k in sorted_keys) + r')(?!\w)'
+        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
 
-    # Apply all replacements to the full query
-    for original, replaced in replacements:
-        updated = updated.replace(original, replaced)
-
+    updated = nrql
+    for table, block in extract_from_table_blocks(nrql):
+        if table in mapper:
+            replaced_block = replace_block_fields(block, mapper[table])
+            updated = updated.replace(block, replaced_block)
     return updated
-
-
-
-
-bcndbnd
