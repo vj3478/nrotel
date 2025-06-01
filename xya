@@ -1,0 +1,50 @@
+import asyncio
+import aiohttp
+import re
+import json
+from pathlib import Path
+
+
+def is_nested_span_query(nrql):
+    nrql_cleaned = re.sub(r'\s+', ' ', nrql.lower())
+    return nrql_cleaned.count('from span') > 1
+
+
+def extract_from_table_blocks(nrql):
+    blocks = []
+    pattern = r'(from\s+(\w+)[^)]*?)(?=from\s+\w+|\)|$)'  # more accurate table detection across nested blocks
+    for match in re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL):
+        table_name = match.group(2)
+        block = match.group(1)
+        blocks.append((table_name, block))
+    return blocks
+
+
+def load_mapper_json(file_path):
+    if Path(file_path).exists():
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def replace_table_blocks_with_mapping(nrql, mapper):
+    def replace_block_fields(block, field_mapping):
+        def replacement_func(match):
+            field = match.group(0)
+            for k, v in field_mapping.items():
+                if field.lower() == k.lower():
+                    return v
+            return field
+
+        # Sort keys by length descending to prevent partial matching (e.g., 'app' vs 'appName')
+        sorted_keys = sorted(field_mapping.keys(), key=len, reverse=True)
+        # Match words or symbols like count(*) or duration.ms*1000
+        pattern = r'(?<!\w)(' + '|'.join(re.escape(k) for k in sorted_keys) + r')(?!\w)'
+        return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
+
+    updated = nrql
+    for table, block in extract_from_table_blocks(nrql):
+        if table in mapper:
+            replaced_block = replace_block_fields(block, mapper[table])
+            updated = updated.replace(block, replaced_block)
+    return updated
