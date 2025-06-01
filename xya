@@ -12,7 +12,8 @@ def is_nested_span_query(nrql):
 
 def extract_from_table_blocks(nrql):
     blocks = []
-    pattern = r'(from\s+(\w+)[^)]*?)(?=from\s+\w+|\)|$)'  # more accurate table detection across nested blocks
+    # support both "FROM <table>" and queries that start with "SELECT ... FROM <table>"
+    pattern = r'(select\s+[^)]*?from\s+(\w+)[^)]*?)(?=select\s+from\s+\w+|\)|$)'  # adjusted for leading SELECT
     for match in re.finditer(pattern, nrql, flags=re.IGNORECASE | re.DOTALL):
         table_name = match.group(2)
         block = match.group(1)
@@ -32,14 +33,14 @@ def replace_table_blocks_with_mapping(nrql, mapper):
         def replacement_func(match):
             field = match.group(0)
             for k, v in field_mapping.items():
-                if field.lower() == k.lower():
+                if re.fullmatch(re.escape(k), field, re.IGNORECASE):
                     return v
             return field
 
         # Sort keys by length descending to prevent partial matching (e.g., 'app' vs 'appName')
         sorted_keys = sorted(field_mapping.keys(), key=len, reverse=True)
-        # Match words or symbols like count(*) or duration.ms*1000
-        pattern = r'(?<!\w)(' + '|'.join(re.escape(k) for k in sorted_keys) + r')(?!\w)'
+        # Match exact substrings and special symbols like count(*) or duration.ms*1000
+        pattern = r'(' + '|'.join(re.escape(k) for k in sorted_keys) + r')'
         return re.sub(pattern, replacement_func, block, flags=re.IGNORECASE)
 
     updated = nrql
