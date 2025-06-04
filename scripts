@@ -181,3 +181,40 @@ From Span where entity.name='afdasfafsa' and name='sadfdsafd' and asv='asdfda'
 updated_nrql_new_user_query = update_span_query_columns(nrql_new_user_query, mapper)
 print(f"Original New User Query:\n{nrql_new_user_query}")
 print(f"Updated New User Query:\n{updated_nrql_new_user_query}")
+
+
+
+###########
+import re
+from typing import List, Dict
+
+def extract_field_values(nrql_query: str, fields: List[str]) -> Dict[str, List[str]]:
+    result = {}
+    field_pattern = "|".join(re.escape(field) for field in fields)
+
+    # Match = or LIKE with escaped quotes inside
+    simple_pattern = rf"""({field_pattern})\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
+    for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        key = match.group(1)
+        raw_value = match.group(4)
+        value = raw_value.encode().decode('unicode_escape')  # Unescape \n, \", etc.
+        result.setdefault(key, []).append(value)
+
+    # Match IN (...)
+    in_pattern = rf"""({field_pattern})\s+IN\s*\(\s*([^)]+)\)"""
+    for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE):
+        key = match.group(1)
+        raw_values = match.group(2)
+        values = re.findall(r"""(['"])(.*?)(?<!\\)\1""", raw_values)
+        result.setdefault(key, []).extend(
+            v[1].encode().decode('unicode_escape') for v in values
+        )
+
+    return result
+
+#####
+#####
+
+
+
+
