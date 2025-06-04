@@ -186,33 +186,27 @@ print(f"Updated New User Query:\n{updated_nrql_new_user_query}")
 
 ###########
 import re
-from typing import List, Dict
+from typing import List
 
-def extract_field_values(nrql_query: str, fields: List[str]) -> Dict[str, List[str]]:
-    result = {}
+def extract_all_field_values(nrql_query: str, fields: List[str]) -> List[str]:
+    results = []
     field_pattern = "|".join(re.escape(field) for field in fields)
 
-    # Match = or LIKE with escaped quotes inside
+    # Match = or LIKE (supports escaped quotes)
     simple_pattern = rf"""({field_pattern})\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
     for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
-        key = match.group(1)
         raw_value = match.group(4)
-        value = raw_value.encode().decode('unicode_escape')  # Unescape \n, \", etc.
-        result.setdefault(key, []).append(value)
+        value = raw_value.encode().decode('unicode_escape')
+        results.append(value)
 
-    # Match IN (...)
+    # Match IN (...) blocks
     in_pattern = rf"""({field_pattern})\s+IN\s*\(\s*([^)]+)\)"""
     for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE):
-        key = match.group(1)
         raw_values = match.group(2)
         values = re.findall(r"""(['"])(.*?)(?<!\\)\1""", raw_values)
-        result.setdefault(key, []).extend(
-            v[1].encode().decode('unicode_escape') for v in values
-        )
+        results.extend(v[1].encode().decode('unicode_escape') for v in values)
 
-    return result
-
-#####
+    return results
 #####
 
 
