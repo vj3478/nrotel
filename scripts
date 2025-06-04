@@ -409,7 +409,83 @@ if __name__ == "__main__":
 
 ########
 
-###########
+import requests
+import csv
+import json
+from typing import List
+
+# --- Configuration ---
+API_KEY = "YOUR_NEW_RELIC_API_KEY"
+ACCOUNT_IDS = [1234567, 7654321]  # Replace with your account IDs
+NRQL_QUERY = "FROM Span SELECT count(*) WHERE appName = 'frontend' SINCE 30 minutes ago"
+CSV_OUTPUT_TEMPLATE = "nrql_result_account_{account_id}.csv"
+
+# --- GraphQL Query Template ---
+GRAPHQL_QUERY = """
+query($accountId: Int!, $nrql: String!) {
+  actor {
+    account(id: $accountId) {
+      nrql(query: $nrql) {
+        results
+        metadata {
+          eventTypes
+          facets
+        }
+      }
+    }
+  }
+}
+"""
+
+# --- Headers ---
+HEADERS = {
+    "Api-Key": API_KEY,
+    "Content-Type": "application/json"
+}
+
+def run_nrql_query(account_id: int, nrql: str):
+    payload = {
+        "query": GRAPHQL_QUERY,
+        "variables": {
+            "accountId": account_id,
+            "nrql": nrql
+        }
+    }
+
+    response = requests.post("https://api.newrelic.com/graphql", headers=HEADERS, json=payload)
+    response.raise_for_status()
+    data = response.json()
+
+    try:
+        results = data["data"]["actor"]["account"]["nrql"]["results"]
+        return results
+    except KeyError:
+        print(f"⚠️ Error: Unexpected response for account {account_id}")
+        print(json.dumps(data, indent=2))
+        return None
+
+def export_to_csv(results: List[dict], account_id: int):
+    if not results:
+        print(f"⚠️ No results for account {account_id}")
+        return
+
+    filename = CSV_OUTPUT_TEMPLATE.format(account_id=account_id)
+    keys = sorted(results[0].keys())
+    with open(filename, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
+    print(f"✅ Results for account {account_id} saved to '{filename}'")
+
+def main():
+    for account_id in ACCOUNT_IDS:
+        print(f"🔍 Running NRQL for account {account_id}...")
+        results = run_nrql_query(account_id, NRQL_QUERY)
+        export_to_csv(results, account_id)
+
+if __name__ == "__main__":
+    main()
 
 
 
