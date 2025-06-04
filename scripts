@@ -408,23 +408,46 @@ if __name__ == "__main__":
     main()
 
 ########
-
 import requests
 import csv
 import json
+import logging
 from typing import List
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+# --- Setup Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("nrql_export.log"),
+        logging.StreamHandler()
+    ]
+)
 
 # --- Configuration ---
 API_KEY = "YOUR_NEW_RELIC_API_KEY"
-ACCOUNT_IDS = [1234567, 7654321]  # Replace with your account IDs
-NRQL_QUERY = "FROM Span SELECT count(*) WHERE appName = 'frontend' SINCE 30 minutes ago"
-CSV_OUTPUT_TEMPLATE = "nrql_result_account_{account_id}.csv"
+ACCOUNT_IDS = [1234567, 7654321]  # Replace with your real account IDs
+CSV_OUTPUT = "nrql_combined_results.csv"
+
+# --- NRQL Query ---
+NRQL_QUERY = """
+FROM Span 
+SELECT count(*) 
+WHERE (telemetry.sdk.name IS NOT NULL OR telemetry.sdk.version IS NOT NULL) 
+  AND aws.version IS NULL 
+  AND instrumentation.provider = 'opentelemetry' 
+  AND aws.lambda.arn IS NULL 
+FACET service.name, Component, owner 
+LIMIT MAX
+"""
 
 # --- GraphQL Query Template ---
 GRAPHQL_QUERY = """
 query($accountId: Int!, $nrql: String!) {
   actor {
     account(id: $accountId) {
+      name
       nrql(query: $nrql) {
         results
         metadata {
@@ -443,7 +466,13 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-def run_nrql_query(account_id: int, nrql: str):
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, KeyError)),
+    reraise=True
+)
+def run_nrql_query(account_id: int, nrql: str) -> List[dict]:
     payload = {
         "query": GRAPHQL_QUERY,
         "variables": {
@@ -452,37 +481,51 @@ def run_nrql_query(account_id: int, nrql: str):
         }
     }
 
+    logging.info(f"📤 Sending query to account {account_id}")
     response = requests.post("https://api.newrelic.com/graphql", headers=HEADERS, json=payload)
     response.raise_for_status()
     data = response.json()
 
-    try:
-        results = data["data"]["actor"]["account"]["nrql"]["results"]
-        return results
-    except KeyError:
-        print(f"⚠️ Error: Unexpected response for account {account_id}")
-        print(json.dumps(data, indent=2))
-        return None
+    account_name = data["data"]["actor"]["account"]["name"]
+    results = data["data"]["actor"]["account"]["nrql"]["results"]
+    for row in results:
+        row["account_id"] = account_id
+        row["account_name"] = account_name
+    logging.info(f"✅ Retrieved {len(results)} results for account {account_id} ({account_name})")
+    return results
 
-def export_to_csv(results: List[dict], account_id: int):
-    if not results:
-        print(f"⚠️ No results for account {account_id}")
+def export_combined_csv(all_results: List[dict], output_filename: str):
+    if not all_results:
+        logging.warning("⚠️ No results returned from any account.")
         return
 
-    filename = CSV_OUTPUT_TEMPLATE.format(account_id=account_id)
-    keys = sorted(results[0].keys())
-    with open(filename, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        for row in results:
-            writer.writerow(row)
-    print(f"✅ Results for account {account_id} saved to '{filename}'")
+    # Collect all possible keys
+    keys_set = set()
+    for row in all_results:
+        keys_set.update(row.keys())
+    keys = sorted(keys_set)
+
+    try:
+        with open(output_filename, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            for row in all_results:
+                writer.writerow(row)
+        logging.info(f"✅ Combined results saved to '{output_filename}'")
+    except Exception as e:
+        logging.exception(f"❌ Failed to write results to CSV: {e}")
 
 def main():
+    all_results = []
     for account_id in ACCOUNT_IDS:
-        print(f"🔍 Running NRQL for account {account_id}...")
-        results = run_nrql_query(account_id, NRQL_QUERY)
-        export_to_csv(results, account_id)
+        try:
+            logging.info(f"🔍 Running NRQL query for account {account_id}...")
+            results = run_nrql_query(account_id, NRQL_QUERY)
+            all_results.extend(results)
+        except Exception as e:
+            logging.error(f"❌ Failed after retries for account {account_id}: {e}")
+
+    export_combined_csv(all_results, CSV_OUTPUT)
 
 if __name__ == "__main__":
     main()
