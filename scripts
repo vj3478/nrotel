@@ -242,7 +242,112 @@ def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> boo
 
     return False
 
-############%
+############
+
+
+import requests
+import csv
+import json
+from typing import List
+
+# --- Configuration ---
+API_KEY = "YOUR_NEW_RELIC_API_KEY"
+ACCOUNT_IDS = [1234567, 7654321]  # Replace with your real account IDs
+CSV_OUTPUT = "nrql_combined_results.csv"
+
+# --- Complex NRQL Query ---
+NRQL_QUERY = """
+FROM Span 
+SELECT count(*) 
+WHERE (telemetry.sdk.name IS NOT NULL OR telemetry.sdk.version IS NOT NULL) 
+  AND aws.version IS NULL 
+  AND instrumentation.provider = 'opentelemetry' 
+  AND aws.lambda.arn IS NULL 
+FACET service.name, Component, owner 
+LIMIT MAX
+"""
+
+# --- GraphQL Query Template ---
+GRAPHQL_QUERY = """
+query($accountId: Int!, $nrql: String!) {
+  actor {
+    account(id: $accountId) {
+      nrql(query: $nrql) {
+        results
+        metadata {
+          eventTypes
+          facets
+        }
+      }
+    }
+  }
+}
+"""
+
+# --- Headers ---
+HEADERS = {
+    "Api-Key": API_KEY,
+    "Content-Type": "application/json"
+}
+
+def run_nrql_query(account_id: int, nrql: str):
+    payload = {
+        "query": GRAPHQL_QUERY,
+        "variables": {
+            "accountId": account_id,
+            "nrql": nrql
+        }
+    }
+
+    try:
+        response = requests.post("https://api.newrelic.com/graphql", headers=HEADERS, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        results = data["data"]["actor"]["account"]["nrql"]["results"]
+        for row in results:
+            row["account_id"] = account_id  # Add account_id to each row
+        return results
+    except requests.HTTPError as http_err:
+        print(f"❌ HTTP error for account {account_id}: {http_err}")
+    except KeyError:
+        print(f"⚠️ Unexpected response structure for account {account_id}:")
+        print(json.dumps(data, indent=2))
+    except Exception as e:
+        print(f"❌ General error for account {account_id}: {e}")
+    return []
+
+def export_combined_csv(all_results: List[dict], output_filename: str):
+    if not all_results:
+        print("⚠️ No results returned from any account.")
+        return
+
+    keys = sorted(all_results[0].keys())
+    with open(output_filename, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        for row in all_results:
+            writer.writerow(row)
+    print(f"\n✅ Combined results saved to '{output_filename}'")
+
+def main():
+    all_results = []
+    for account_id in ACCOUNT_IDS:
+        print(f"\n🔍 Running NRQL query for account {account_id}...")
+        results = run_nrql_query(account_id, NRQL_QUERY)
+        all_results.extend(results)
+
+    export_combined_csv(all_results, CSV_OUTPUT)
+
+if __name__ == "__main__":
+    main()
+
+########
+
+###########
+
+
+
+
 
 
 
