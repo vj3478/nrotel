@@ -186,64 +186,65 @@ print(f"Updated New User Query:\n{updated_nrql_new_user_query}")
 
 ###########
 import re
-from typing import List
+from typing import List, Dict
 
-def extract_service_and_entity_names(nrql_query: str) -> List[str]:
-    results = []
-    fields = ["service.name", "entity.name"]
-    field_pattern = "|".join(re.escape(field) for field in fields)
+def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> bool:
+    def normalize(s: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9]', '', s).lower()
 
-    # Match = or LIKE (with support for escaped quotes)
-    simple_pattern = rf"""({field_pattern})\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
+    normalized_allowed = {
+        "service_or_entity": [normalize(v) for v in allowed_apps.get("service_or_entity", [])],
+        "entity.guid": [normalize(v) for v in allowed_apps.get("entity.guid", [])]
+    }
+
+    field_aliases = {
+        "service.name": "service_or_entity",
+        "entity.name": "service_or_entity",
+        "entity.guid": "entity.guid"
+    }
+
+    fields_to_extract = field_aliases.keys()
+    pattern_fields = "|".join(re.escape(f) for f in fields_to_extract)
+
+    # Match = or LIKE
+    simple_pattern = rf"""({pattern_fields})\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
     for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
-        raw_value = match.group(4)
+        field, operator, raw_value = match.group(1), match.group(2), match.group(4)
         value = raw_value.encode().decode('unicode_escape')
-        results.append(value)
+        norm_val = normalize(value)
+        target_key = field_aliases[field]
+
+        for allowed in normalized_allowed.get(target_key, []):
+            if '%' in value:
+                prefix = normalize(value.split('%')[0])
+                if allowed.startswith(prefix):
+                    return True
+            elif norm_val == allowed:
+                return True
 
     # Match IN (...)
-    in_pattern = rf"""({field_pattern})\s+IN\s*\(\s*([^)]+)\)"""
+    in_pattern = rf"""({pattern_fields})\s+IN\s*\(\s*([^)]+)\)"""
     for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE):
-        raw_values = match.group(2)
+        field, raw_values = match.group(1), match.group(2)
+        target_key = field_aliases[field]
         values = re.findall(r"""(['"])(.*?)(?<!\\)\1""", raw_values)
-        results.extend(v[1].encode().decode('unicode_escape') for v in values)
 
-    return results
+        for _, val in values:
+            unescaped = val.encode().decode('unicode_escape')
+            norm_val = normalize(unescaped)
+            for allowed in normalized_allowed.get(target_key, []):
+                if '%' in unescaped:
+                    prefix = normalize(unescaped.split('%')[0])
+                    if allowed.startswith(prefix):
+                        return True
+                elif norm_val == allowed:
+                    return True
 
-def normalize_text(s: str) -> str:
-    """Removes all non-alphanumeric characters and lowercases for comparison."""
-    return re.sub(r'[^a-zA-Z0-9]', '', s).lower()
+    return False
 
-def fuzzy_match_app_names(extracted_values: List[str], allowed_apps: List[str]) -> List[str]:
-    """Returns allowed app names that match extracted values after normalization."""
-    normalized_allowed = {normalize_text(a): a for a in allowed_apps}
-    matches = []
+############%
 
-    for val in extracted_values:
-        norm_val = normalize_text(val)
-        if norm_val in normalized_allowed:
-            matches.append(normalized_allowed[norm_val])
-    
-    return matches
 
-# -------------------------------
-# 🔁 Example usage
-# -------------------------------
-if __name__ == "__main__":
-    nrql = '''
-    FROM Span SELECT count(*) 
-    WHERE service.name = "checkout\\\"service" 
-      AND entity.name LIKE 'frontend%' 
-      AND entity.name IN ("ui", "api\\\"core")
-    '''
-
-    allowed_app_names = ["checkout service"]
-
-    extracted = extract_service_and_entity_names(nrql)
-    print("🔍 Extracted values:", extracted)
-
-    matches = fuzzy_match_app_names(extracted, allowed_app_names)
-    print("✅ Matched app names:", matches)
-#####
 
 
 
