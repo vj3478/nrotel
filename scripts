@@ -641,7 +641,89 @@ if __name__ == "__main__":
 ----
 
 
-aaaaaa
+import json
+import asyncio
+import logging
+from collections import Counter
+
+async def validate_batch_with_retry(session, current_batch, max_retries=3, retry_delay=2):
+    total_results = ["pending"] * len(current_batch)
+
+    for attempt in range(max_retries):
+        logging.info(f"🔁 Validation attempt {attempt + 1}")
+
+        try:
+            pending_indexes = [i for i, r in enumerate(total_results) if r == "pending"]
+            if not pending_indexes:
+                break
+
+            # Build query for pending items only
+            query_parts = []
+            for i in pending_indexes:
+                row = current_batch[i]
+                nrql = row['nrqlQuery'].replace('"', '\\"').replace("\n", " ")
+                query_parts.append(
+                    f"""
+                    q{i}: actor {{
+                      account(id: {row['accountId']}) {{
+                        nrql(query: "{nrql}") {{
+                          results
+                        }}
+                      }}
+                    }}
+                    """
+                )
+            full_query = f"query {{\n{''.join(query_parts)}\n}}"
+
+            data = await graphql_query(session, {"query": full_query})
+
+            if data is None:
+                logging.warning("⚠️ No data in response. Retrying...")
+                await asyncio.sleep(retry_delay)
+                continue
+
+            error_paths = {e["path"][0] for e in data.get("errors", [])} if "errors" in data else set()
+
+            for i in pending_indexes:
+                alias = f"q{i}"
+
+                if alias in error_paths:
+                    total_results[i] = "invalid"
+                    continue
+
+                alias_data = data.get(alias, {}).get("nrql", {})
+                result_block = alias_data.get("results")
+
+                if result_block is None:
+                    logging.warning(f"⚠️ No result block for alias {alias}: {alias_data}")
+                    total_results[i] = "timeout"
+                elif isinstance(result_block, list) and len(result_block) == 0:
+                    total_results[i] = "no_results"
+                else:
+                    found_valid = any(
+                        value is not None and key not in {"beginTimeSeconds", "endTimeSeconds", "inspectedCount"}
+                        for row in result_block
+                        for key, value in row.items()
+                    )
+                    total_results[i] = "success" if found_valid else "failed"
+
+            logging.info(f"Intermediate results (attempt {attempt + 1}): {total_results}")
+            await asyncio.sleep(retry_delay)
+
+        except Exception as e:
+            logging.error(f"🔥 Exception in attempt {attempt + 1}: {str(e)}")
+            await asyncio.sleep(retry_delay)
+
+    # Any leftover pending = timeout
+    for i, r in enumerate(total_results):
+        if r == "pending":
+            total_results[i] = "timeout"
+
+    # Summarize result
+    result_counts = Counter(total_results)
+    summary = [f"{k}: {v}" for k, v in result_counts.items()]
+    logging.info(f"🧾 Final validation summary: {summary}")
+    return summary
 
 
 
