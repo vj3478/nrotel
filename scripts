@@ -530,6 +530,119 @@ def main():
 if __name__ == "__main__":
     main()
 
+--------
+import re
+import csv
+from typing import Dict, List
+
+# --- Utilities ---
+def normalize(s: str) -> str:
+    return s.lower().strip()
+
+def match_like_pattern(pattern: str, target: str) -> bool:
+    pattern = normalize(pattern)
+    target = normalize(target)
+
+    if pattern.startswith('%') and pattern.endswith('%'):
+        return pattern.strip('%') in target
+    elif pattern.startswith('%'):
+        return target.endswith(pattern.strip('%'))
+    elif pattern.endswith('%'):
+        return target.startswith(pattern.strip('%'))
+    else:
+        return pattern == target
+
+# --- Main Match Function ---
+def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> bool:
+    normalized_allowed = {
+        "service_or_entity": [normalize(v) for v in allowed_apps.get("service_or_entity", [])],
+        "entity.guid": [normalize(v) for v in allowed_apps.get("entity.guid", [])],
+    }
+
+    field_aliases = {
+        "service.name": "service_or_entity",
+        "entity.name": "service_or_entity",
+        "entity.guid": "entity.guid",
+    }
+
+    fields_to_extract = field_aliases.keys()
+    pattern_fields = "|".join(re.escape(f) for f in fields_to_extract)
+
+    simple_pattern = rf"""({pattern_fields})\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
+    for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        field, operator, quote, raw_value = match.groups()
+        value = bytes(raw_value, "utf-8").decode("unicode_escape")
+        target_key = field_aliases[field]
+
+        for allowed in normalized_allowed.get(target_key, []):
+            if operator.upper() == "LIKE":
+                if match_like_pattern(value, allowed):
+                    return True
+            elif normalize(value) == allowed:
+                return True
+
+    in_pattern = rf"""({pattern_fields})\s+IN\s*\(\s*(.*?)\s*\)"""
+    for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        field, raw_values = match.groups()
+        target_key = field_aliases[field]
+        values = re.findall(r"""(['"])(.*?)(?<!\\)\1""", raw_values)
+
+        for _, val in values:
+            unescaped = bytes(val, "utf-8").decode("unicode_escape")
+            for allowed in normalized_allowed.get(target_key, []):
+                if match_like_pattern(unescaped, allowed):
+                    return True
+
+    return False
+
+# --- Load CSV ---
+def load_allowed_apps_from_csv(csv_filename: str) -> Dict[str, List[str]]:
+    allowed_apps = {"service_or_entity": [], "entity.guid": []}
+    with open(csv_filename, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("service_or_entity"):
+                allowed_apps["service_or_entity"].append(row["service_or_entity"])
+            if row.get("entity.guid"):
+                allowed_apps["entity.guid"].append(row["entity.guid"])
+    return allowed_apps
+
+# --- Example Runner ---
+def run_match_on_queries(nrql_queries: List[str], allowed_apps_csv: str):
+    allowed_apps = load_allowed_apps_from_csv(allowed_apps_csv)
+    results = []
+    for query in nrql_queries:
+        match = has_matching_app(query, allowed_apps)
+        results.append({"nrql_query": query.strip(), "match": match})
+    return results
+
+# --- Test Usage ---
+if __name__ == "__main__":
+    queries = [
+        '''FROM Span SELECT count(*) 
+           WHERE service.name = "checkout-service" 
+           AND entity.name LIKE 'frontend%' 
+           AND entity.guid IN ('1234-abcd')''',
+
+        '''FROM Span SELECT count(*) 
+           WHERE service.name = "billing" 
+           AND entity.name LIKE 'admin%' 
+           AND entity.guid IN ('9999-xxxx')'''
+    ]
+
+    result = run_match_on_queries(queries, "allowed_apps.csv")
+    for r in result:
+        print(r)
+
+
+
+
+
+----
+
+
+aaaaaa
+
 
 
 
