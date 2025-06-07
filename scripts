@@ -1023,6 +1023,34 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
 
     return total_results
 
+---
+
+Feature
+Old Version
+✅ New Version
+result_block key handling
+Basic .get("results")
+Same (still safe .get())
+Handling results: None
+"timeout"
+✅ "timeout" still used
+Handling results: []
+Might mark as "timeout"
+✅ "no_data" correctly assigned
+Handling values == None
+Not properly checked
+✅ "no_data" for all None values
+Ignoring structural keys
+❌ Not implemented
+✅ Skips beginTimeSeconds, etc.
+Handling 0 or 0.0 values
+❌ Not distinct
+✅ Marked as "result_0"
+Full result summary logging
+Partial or missing
+✅ Included with Counter
+
+
 
 
 
