@@ -906,6 +906,104 @@ def transform_any_span_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> st
 
 ----
 
+from collections import Counter
+
+async def validate_batch(current_batch: List[Dict[str, Any]], session: aiohttp.ClientSession) -> List[str]:
+    global global_alias_counter
+
+    if not session or session.closed:
+        raise ValueError("Invalid or closed session")
+
+    total_results = ["pending"] * len(current_batch)
+
+    for attempt in range(MAX_RETRIES):
+        pending_indexes = [i for i, r in enumerate(total_results) if r == "pending"]
+        if not pending_indexes:
+            break
+
+        alias_map = {}
+        query_parts = []
+
+        for i in pending_indexes:
+            row = current_batch[i]
+            alias = f"q{global_alias_counter}"
+            global_alias_counter += 1
+            alias_map[alias] = i
+
+            query = escape_query(row["query"])
+            account_id = row["accountIds"]
+
+            query_parts.append(f"""
+            {alias}: actor {{
+              nrql(
+                accounts: {account_id}
+                query: "{query}"
+                timeout: 60
+              ) {{
+                results
+              }}
+            }}
+            """)
+
+        if not query_parts:
+            logger.error("❌ No queries to validate.")
+            total_results.extend(["failed"] * len(current_batch))
+            continue
+
+        full_query = "query {\n" + "\n".join(query_parts) + "\n}"
+        logging.info(f"📤 Sending validation query of length {len(full_query)}")
+
+        data = await graphql_query(session, {"query": full_query})
+        print("The data is ", data)
+
+        if data is None:
+            logging.warning("⚠️ No data in response. Retrying...")
+            await asyncio.sleep(RETRY_DELAY)
+            continue
+
+        error_paths = {e["path"][0] for e in data.get("errors", [])} if "errors" in data else set()
+
+        for alias, i in alias_map.items():
+            if alias in error_paths:
+                total_results[i] = "invalid"
+                continue
+
+            alias_data = data.get(alias, {}).get("nrql", {})
+            result_block = alias_data.get("results")
+
+            if result_block is None:
+                logging.warning(f"No result block for alias {alias}")
+                total_results[i] = "timeout"
+                continue
+
+            if isinstance(result_block, list) and len(result_block) == 0:
+                total_results[i] = "no_data"
+                continue
+
+            if isinstance(result_block, list):
+                row = result_block[0]
+                if isinstance(row, dict):
+                    values = list(row.values())
+                    if all(v is None for v in values):
+                        total_results[i] = "no_data"
+                    elif all(v == 0 or v == 0.0 for v in values):
+                        total_results[i] = "result_0"
+                    else:
+                        total_results[i] = "success"
+                    continue
+
+            total_results[i] = "failed"
+
+        # Mark any remaining pending as timeout
+        for i, r in enumerate(total_results):
+            if r == "pending":
+                total_results[i] = "timeout"
+
+        result_counts = Counter(total_results)
+        summary = [f"{k}: {v}" for k, v in result_counts.items()]
+        logging.info(f"✅ Final validation summary: {summary}")
+
+    return total_results
 
 ['success', 'no_data', 'result_0', 'invalid', 'timeout', 'failed', ...]
 
