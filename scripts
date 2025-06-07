@@ -906,9 +906,19 @@ def transform_any_span_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> st
 
 ----
 
+
+ import asyncio
+import logging
+from typing import List, Dict, Any
 from collections import Counter
 
-async def validate_batch(current_batch: List[Dict[str, Any]], session: aiohttp.ClientSession) -> List[str]:
+RETRY_DELAY = 2
+MAX_RETRIES = 3
+
+# You must declare this at the module level
+global_alias_counter = 0
+
+async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[str]:
     global global_alias_counter
 
     if not session or session.closed:
@@ -930,7 +940,7 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session: aiohttp.C
             global_alias_counter += 1
             alias_map[alias] = i
 
-            query = escape_query(row["query"])
+            query = row["query"].replace('"', '\\"').replace("\n", " ").strip()
             account_id = row["accountIds"]
 
             query_parts.append(f"""
@@ -946,34 +956,40 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session: aiohttp.C
             """)
 
         if not query_parts:
-            logger.error("❌ No queries to validate.")
-            total_results.extend(["failed"] * len(current_batch))
-            continue
+            logging.error("❌ No queries to validate.")
+            total_results = ["failed"] * len(current_batch)
+            break
 
         full_query = "query {\n" + "\n".join(query_parts) + "\n}"
         logging.info(f"📤 Sending validation query of length {len(full_query)}")
 
-        data = await graphql_query(session, {"query": full_query})
-        print("The data is ", data)
-
-        if data is None:
+        graphql_response = await graphql_query(session, {"query": full_query})
+        data = graphql_response.get("data", {})
+        if not data:
             logging.warning("⚠️ No data in response. Retrying...")
             await asyncio.sleep(RETRY_DELAY)
             continue
 
-        error_paths = {e["path"][0] for e in data.get("errors", [])} if "errors" in data else set()
+        error_paths = {e["path"][0] for e in graphql_response.get("errors", [])} if "errors" in graphql_response else set()
 
         for alias, i in alias_map.items():
             if alias in error_paths:
                 total_results[i] = "invalid"
+                logging.warning(f"❌ Alias {alias} returned NRQL error.")
                 continue
 
-            alias_data = data.get(alias, {}).get("nrql", {})
+            alias_node = data.get(alias)
+            if not alias_node:
+                total_results[i] = "failed"
+                logging.error(f"❌ Alias {alias} missing in response.")
+                continue
+
+            alias_data = alias_node.get("nrql", {})
             result_block = alias_data.get("results")
 
             if result_block is None:
-                logging.warning(f"No result block for alias {alias}")
                 total_results[i] = "timeout"
+                logging.warning(f"⚠️ Alias {alias} → timeout (results block is None)")
                 continue
 
             if isinstance(result_block, list) and len(result_block) == 0:
@@ -981,9 +997,9 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session: aiohttp.C
                 continue
 
             if isinstance(result_block, list):
-                row = result_block[0]
-                if isinstance(row, dict):
-                    values = list(row.values())
+                first_row = result_block[0]
+                if isinstance(first_row, dict):
+                    values = list(first_row.values())
                     if all(v is None for v in values):
                         total_results[i] = "no_data"
                     elif all(v == 0 or v == 0.0 for v in values):
@@ -994,18 +1010,18 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session: aiohttp.C
 
             total_results[i] = "failed"
 
-        # Mark any remaining pending as timeout
-        for i, r in enumerate(total_results):
-            if r == "pending":
+        # Handle leftover pending results
+        for i, result in enumerate(total_results):
+            if result == "pending":
                 total_results[i] = "timeout"
 
         result_counts = Counter(total_results)
-        summary = [f"{k}: {v}" for k, v in result_counts.items()]
+        summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
         logging.info(f"✅ Final validation summary: {summary}")
 
     return total_results
 
-['success', 'no_data', 'result_0', 'invalid', 'timeout', 'failed', ...]
+
 
 
 
