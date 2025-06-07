@@ -820,6 +820,93 @@ async def validate_batch_with_retry(session, current_batch, max_retries=3, retry
 
 
 
+----------
+
+Mapper = {
+    "Span": {
+        r"FROM\s+Span": "FROM Metric",
+        r"count\(\s*duration\.ms\s*\*\s*1000\s*\)": "count(http.server%.duration)",
+        r"duration\.ms\s*\*\s*1000": "http.server%.duration",
+        r"duration\.ms": "http.server%.duration / 1000",
+        r"span\.kind\s*=": "span.kind !=",
+        r"span\.kind\s+like": "span.kind not like",
+        r"span\.kind\s+in": "span.kind not in",
+        r"url\.path": "http.route",
+        r"otel\.status_code\s*=\s*'ERROR'": "error.type is NOT NULL",
+        r"otel\.status_code\s*=\s*'OK'": "error.type is NULL"
+    }
+}
+
+-----
+
+
+import re
+from typing import Dict
+
+def transform_nrql_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> str:
+    """
+    Applies regex-based replacements from a mapper to a query.
+    """
+    original = nrql
+    query = re.sub(r"\s+", " ", nrql.strip())
+
+    for table, rules in mapper.items():
+        if re.search(rf"\b{table}\b", query, flags=re.IGNORECASE):
+            for pattern, replacement in rules.items():
+                query = re.sub(pattern, replacement, query, flags=re.IGNORECASE)
+
+    return query if query != original else original
+
+
+def transform_nested_span_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> str:
+    """
+    Applies transformation only to nested subqueries that contain 'FROM Span'.
+    """
+    def process_nested(text: str) -> str:
+        stack = []
+        result = ""
+        start = 0
+
+        for i, char in enumerate(text):
+            if char == "(":
+                if not stack:
+                    result += text[start:i]
+                    start = i
+                stack.append(i)
+
+            elif char == ")":
+                stack.pop()
+                if not stack:
+                    inner = text[start + 1:i]
+                    transformed = process_nested(inner)
+                    if re.search(r"\bFROM\s+Span\b", transformed, re.IGNORECASE):
+                        transformed = transform_nrql_query(transformed, mapper)
+                    result += f"({transformed})"
+                    start = i + 1
+
+        if start < len(text):
+            result += text[start:]
+        return result
+
+    return process_nested(nrql.strip())
+
+
+def transform_any_span_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> str:
+    """
+    Applies transformation to both top-level and nested 'FROM Span' queries.
+    """
+    updated = transform_nested_span_query(nrql, mapper)
+
+    if re.search(r"\bFROM\s+Span\b", updated, re.IGNORECASE):
+        updated = transform_nrql_query(updated, mapper)
+
+    return updated
+
+
+
+
+
+
 
 
 
