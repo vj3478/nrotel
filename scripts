@@ -904,7 +904,10 @@ def transform_any_span_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> st
 
 
 
+----
 
+
+['success', 'no_data', 'result_0', 'invalid', 'timeout', 'failed', ...]
 
 
 
