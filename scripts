@@ -907,7 +907,7 @@ def transform_any_span_query(nrql: str, mapper: Dict[str, Dict[str, str]]) -> st
 ----
 
 
- import asyncio
+   import asyncio
 import logging
 from typing import List, Dict, Any
 from collections import Counter
@@ -915,7 +915,7 @@ from collections import Counter
 RETRY_DELAY = 2
 MAX_RETRIES = 3
 
-# You must declare this at the module level
+# Module-level alias counter (shared across batches)
 global_alias_counter = 0
 
 async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[str]:
@@ -961,7 +961,7 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
             break
 
         full_query = "query {\n" + "\n".join(query_parts) + "\n}"
-        logging.info(f"📤 Sending validation query of length {len(full_query)}")
+        logging.info(f"📤 Sending validation query (length: {len(full_query)})")
 
         graphql_response = await graphql_query(session, {"query": full_query})
         data = graphql_response.get("data", {})
@@ -975,13 +975,13 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
         for alias, i in alias_map.items():
             if alias in error_paths:
                 total_results[i] = "invalid"
-                logging.warning(f"❌ Alias {alias} returned NRQL error.")
+                logging.warning(f"❌ Alias {alias} → invalid")
                 continue
 
             alias_node = data.get(alias)
             if not alias_node:
                 total_results[i] = "failed"
-                logging.error(f"❌ Alias {alias} missing in response.")
+                logging.error(f"❌ Alias {alias} → missing")
                 continue
 
             alias_data = alias_node.get("nrql", {})
@@ -989,7 +989,7 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
 
             if result_block is None:
                 total_results[i] = "timeout"
-                logging.warning(f"⚠️ Alias {alias} → timeout (results block is None)")
+                logging.warning(f"⚠️ Alias {alias} → timeout (no result block)")
                 continue
 
             if isinstance(result_block, list) and len(result_block) == 0:
@@ -999,8 +999,9 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
             if isinstance(result_block, list):
                 first_row = result_block[0]
                 if isinstance(first_row, dict):
-                    values = list(first_row.values())
-                    if all(v is None for v in values):
+                    # ✅ Updated: ignore structural keys
+                    values = [v for k, v in first_row.items() if k not in {"beginTimeSeconds", "endTimeSeconds", "inspectedCount"}]
+                    if not values or all(v is None for v in values):
                         total_results[i] = "no_data"
                     elif all(v == 0 or v == 0.0 for v in values):
                         total_results[i] = "result_0"
@@ -1010,11 +1011,12 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
 
             total_results[i] = "failed"
 
-        # Handle leftover pending results
+        # Mark leftover pending results as timeout
         for i, result in enumerate(total_results):
             if result == "pending":
                 total_results[i] = "timeout"
 
+        # ✅ Optional: log summary
         result_counts = Counter(total_results)
         summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
         logging.info(f"✅ Final validation summary: {summary}")
