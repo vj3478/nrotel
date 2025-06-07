@@ -1046,6 +1046,101 @@ Alias in GraphQL error path
 Alias not in data
 "failed
 
+-----
+
+------
+
+
+
+import asyncio
+import logging
+from typing import List, Dict, Any
+from collections import Counter
+
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+
+# --- ✅ Reusable Helper Function ---
+def extract_valid_widgets(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Extract widgets that are valid for update:
+    - widget exists
+    - validation is 'success'
+    - passes validate_widget_for_update(widget)
+    Logs number of skipped widgets.
+    """
+    valid_widgets = []
+    skipped = 0
+
+    for b in batch:
+        widget = b.get("widget")
+        if not isinstance(widget, dict):
+            skipped += 1
+            continue
+
+        if widget.get("validation") != "success":
+            skipped += 1
+            continue
+
+        if not validate_widget_for_update(widget):
+            skipped += 1
+            continue
+
+        try:
+            valid_widgets.append({
+                "id": widget["id"],
+                "rawConfiguration": widget["rawConfiguration"],
+                "layout": widget["layout"],
+                "visualization": widget["visualization"]
+            })
+        except KeyError as e:
+            logging.warning(f"⚠️ Skipped widget due to missing key: {e}")
+            skipped += 1
+
+    logging.info(f"✅ Found {len(valid_widgets)} valid widgets for update, skipped {skipped}")
+    return valid_widgets
+
+--------------
+
+
+# --- ✅ Main Dashboard Update Function ---
+async def update_dashboard(
+    dashboard: Dict[str, Any],
+    batch: List[Dict[str, Any]],
+    session: Any  # aoihttp.ClientSession expected
+) -> None:
+    """
+    Updates a New Relic dashboard's widgets if their validation passed.
+    Also processes dashboard variables if available.
+    """
+    updated_widgets = extract_valid_widgets(batch)
+
+    if updated_widgets:
+        for attempt in range(MAX_RETRIES):
+            try:
+                await update_dashboard_widgets(
+                    dashboard["guid"],
+                    updated_widgets,
+                    session
+                )
+                logging.info(f"✅ Dashboard {dashboard['guid']} updated with {len(updated_widgets)} widgets.")
+                break
+            except Exception as e:
+                logging.error(
+                    f"❌ Attempt {attempt + 1} failed to update widgets for {dashboard['guid']} → {str(e)}"
+                )
+                await asyncio.sleep(RETRY_DELAY)
+        else:
+            logging.error(f"🚫 All {MAX_RETRIES} attempts failed to update dashboard {dashboard['guid']}.")
+
+    # Optionally extract dashboard variables
+    variables_list = [
+        (v["name"], v.get("defaultValues", v.get("value", [])))
+        for v in dashboard.get("variables", [])
+        if "name" in v
+    ]
+
+    logging.debug(f"📦 Extracted {len(variables_list)} dashboard variables for {dashboard.get('name', 'unknown')}")
 
 
 
