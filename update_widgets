@@ -1,0 +1,134 @@
+1. extract valid widgets
+
+
+from typing import List, Dict, Any
+import logging
+
+def extract_valid_widgets(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Extract widgets that passed validation and are safe to update.
+    """
+    valid_widgets = []
+    skipped = 0
+
+    for b in batch:
+        widget = b.get("widget")
+        if not isinstance(widget, dict):
+            skipped += 1
+            continue
+
+        if widget.get("validation") != "success":
+            skipped += 1
+            continue
+
+        if not validate_widget_for_update(widget):
+            skipped += 1
+            continue
+
+        try:
+            valid_widgets.append({
+                "id": widget["id"],
+                "rawConfiguration": widget["rawConfiguration"]
+            })
+        except KeyError as e:
+            logging.warning(f"⚠️ Missing key in widget: {e}")
+            skipped += 1
+
+    logging.info(f"✅ {len(valid_widgets)} widgets to update, {skipped} skipped")
+    return valid_UPDATE_WIDGETS_MUTATION = """
+mutation($dashboardId: EntityGuid!, $widgets: [DashboardWidgetInput!]!) {
+  dashboardUpdateWidgets(dashboardId: $dashboardId, widgets: $widgets) {
+    widgets {
+      id
+      rawConfiguration
+    }
+  }
+}
+
+
+-----
+
+2 widgets mutation
+
+UPDATE_WIDGETS_MUTATION = """
+mutation($dashboardId: EntityGuid!, $widgets: [DashboardWidgetInput!]!) {
+  dashboardUpdateWidgets(dashboardId: $dashboardId, widgets: $widgets) {
+    widgets {
+      id
+      rawConfiguration
+    }
+  }
+}
+"""
+
+-----
+update dashboard widgets
+
+
+import aiohttp
+
+async def update_dashboard_widgets(dashboard_id: str, widgets: List[Dict[str, Any]], session: aiohttp.ClientSession):
+    """
+    Sends the widget update mutation for up to 25 widgets in one call.
+    """
+    payload = {
+        "query": UPDATE_WIDGETS_MUTATION,
+        "variables": {
+            "dashboardId": dashboard_id,
+            "widgets": widgets
+        }
+    }
+
+    async with session.post("https://api.newrelic.com/graphql", json=payload) as resp:
+        resp_json = await resp.json()
+        if "errors" in resp_json:
+            raise Exception(f"GraphQL update error: {resp_json['errors']}")
+        return resp_json["data"]
+
+
+
+----
+update dahsboard function
+
+import asyncio
+from more_itertools import chunked  # install via pip if needed
+
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+
+async def update_dashboard(
+    dashboard: Dict[str, Any],
+    batch: List[Dict[str, Any]],
+    session: aiohttp.ClientSession
+) -> None:
+    """
+    Extracts valid widgets and updates them in batches of 25.
+    """
+    valid_widgets = extract_valid_widgets(batch)
+    dashboard_id = dashboard["guid"]
+
+    if not valid_widgets:
+        logging.info(f"ℹ️ No valid widgets to update for dashboard {dashboard_id}")
+        return
+
+    for widget_group in chunked(valid_widgets, 25):
+        for attempt in range(MAX_RETRIES):
+            try:
+                await update_dashboard_widgets(dashboard_id, widget_group, session)
+                logging.info(f"✅ Updated {len(widget_group)} widgets in dashboard {dashboard_id}")
+                break
+            except Exception as e:
+                logging.warning(f"⏳ Retry {attempt + 1} failed for dashboard {dashboard_id}: {e}")
+                await asyncio.sleep(RETRY_DELAY)
+        else:
+            logging.error(f"❌ All retries failed for dashboard {dashboard_id} group of {len(widget_group)} widgets")
+
+----
+
+usage
+
+# somewhere in your orchestration code:
+await update_dashboard(dashboard_json, validated_widget_batch, session)
+
+
+
