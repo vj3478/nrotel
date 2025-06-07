@@ -1025,30 +1025,27 @@ async def validate_batch(current_batch: List[Dict[str, Any]], session) -> List[s
 
 ---
 
-Feature
-Old Version
-✅ New Version
-result_block key handling
-Basic .get("results")
-Same (still safe .get())
-Handling results: None
+Data Pattern Example
+Output
+results: None
 "timeout"
-✅ "timeout" still used
-Handling results: []
-Might mark as "timeout"
-✅ "no_data" correctly assigned
-Handling values == None
-Not properly checked
-✅ "no_data" for all None values
-Ignoring structural keys
-❌ Not implemented
-✅ Skips beginTimeSeconds, etc.
-Handling 0 or 0.0 values
-❌ Not distinct
-✅ Marked as "result_0"
-Full result summary logging
-Partial or missing
-✅ Included with Counter
+results: []
+"no_data"
+results: [{'metric': None}]
+"no_data"
+results: [{'beginTime...': ..., 'metric': None}]
+"no_data"
+results: [{'metric1': 0, 'metric2': 0.0}]
+"result_0"
+results: [{'metric1': 5, 'metric2': 0}]
+"success"
+Malformed results (not list)
+"failed"
+Alias in GraphQL error path
+"invalid"
+Alias not in data
+"failed
+
 
 
 
