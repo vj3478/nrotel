@@ -132,3 +132,66 @@ await update_dashboard(dashboard_json, validated_widget_batch, session)
 
 
 
+
+------
+
+
+async def apply_dashboard_update_if_valid(
+    mode: str,
+    guid: str,
+    dashboard: Dict[str, Any],
+    batch: List[Dict[str, Any]],
+    session,
+    dashboards_summary: List[Dict[str, Any]],
+    results: List[Dict[str, Any]],
+    pbar,
+    processed_count: int
+) -> int:
+    from your_module import validate_widget_for_update  # <-- import if it's external
+
+    # ✅ Ensure all widgets are validated as "success" and structurally valid
+    should_update = mode == "update" and all(
+        b.get("widget", {}).get("validation") == "success" and validate_widget_for_update(b)
+        for b in batch
+    )
+
+    if should_update:
+        logging.info(f"🔁 Updating dashboard {guid} with {len(batch)} widgets")
+
+        try:
+            await update_dashboard(dashboard, batch, session)
+
+            for d in dashboards_summary:
+                if d["guid"] == guid:
+                    d["updated"] = True
+                    d["update_status"] = "success"
+
+            logging.info(f"✅ Dashboard {guid} updated successfully")
+
+        except Exception as e:
+            logging.error(f"❌ Failed to update dashboard {guid}: {e}")
+            for d in dashboards_summary:
+                if d["guid"] == guid:
+                    d["updated"] = False
+                    d["update_status"] = "failed"
+                    d["update_error"] = str(e)
+
+    else:
+        if mode == "update":
+            logging.warning(f"⚠️ Skipping dashboard {guid} (widgets not fully validated or structurally invalid)")
+            for d in dashboards_summary:
+                if d["guid"] == guid:
+                    d["updated"] = False
+                    d["update_status"] = "skipped"
+
+    # ✅ Always update results and progress
+    results.append({"dashboard_guid": guid, "result": dashboard})
+    processed_count += 1
+    pbar.update(1)
+
+    return processed_count
+
+
+
+
+
