@@ -1143,6 +1143,62 @@ async def update_dashboard(
     logging.debug(f"📦 Extracted {len(variables_list)} dashboard variables for {dashboard.get('name', 'unknown')}")
 
 
+-----
+
+
+import re
+from typing import Dict, List
+
+def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> bool:
+    field_aliases = {
+        "service.name": "service_or_entity",
+        "entity.name": "service_or_entity",
+        "entity.guid": "entity.guid",
+    }
+
+    pattern_fields = "|".join([re.escape(f) for f in field_aliases])
+
+    # Pattern for = or LIKE
+    simple_pattern = rf"""`?({pattern_fields})`?\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
+    for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        field, operator, _, value = match.groups()
+        target_key = field_aliases.get(field)
+        if not target_key:
+            continue
+        allowed_values = allowed_apps.get(target_key, [])
+        
+        if operator.upper() == "LIKE":
+            for allowed in allowed_values:
+                if allowed.startswith(value.rstrip('%')):
+                    return True
+        elif operator == "=":
+            if value in allowed_values:
+                return True
+
+    # Strict matching for IN clause — all values must be allowed
+    in_pattern = rf"""`?({pattern_fields})`?\s+IN\s*\(([^)]+)\)"""
+    for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        field, raw_values = match.groups()
+        target_key = field_aliases.get(field)
+        if not target_key:
+            continue
+        allowed_values = allowed_apps.get(target_key, [])
+        values = re.findall(r"""['"]([^'"]+)['"]""", raw_values)
+        
+        if not values:  # Empty IN clause
+            return False
+        
+        if all(val in allowed_values for val in values):
+            return True
+        else:
+            return False  # strict: one or more not allowed
+
+    return False
+
+
+
+
+
 
 
 
