@@ -1145,11 +1145,10 @@ async def update_dashboard(
 
 -----
 
-
 import re
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 
-def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> bool:
+def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> Tuple[bool, Optional[str]]:
     field_aliases = {
         "service.name": "service_or_entity",
         "entity.name": "service_or_entity",
@@ -1170,19 +1169,17 @@ def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> boo
         allowed_values = allowed_apps.get(target_key, [])
 
         print(f"🔍 Matching field: {field}, operator: {operator}, value: '{value}'")
-        
+
         if operator.upper() == "LIKE":
             for allowed in allowed_values:
-                print(f"  ⏳ LIKE check: does '{allowed}' start with '{value.rstrip('%')}'?")
                 if allowed.startswith(value.rstrip('%')):
                     print(f"✅ MATCH (LIKE): '{allowed}' starts with '{value.rstrip('%')}'")
-                    return True
+                    return True, allowed
         elif operator == "=":
             for allowed in allowed_values:
-                print(f"  ⏳ EQUAL check: is '{value}' == '{allowed}'?")
                 if value == allowed:
                     print(f"✅ MATCH (=): '{value}' == '{allowed}'")
-                    return True
+                    return True, allowed
 
     # Strict IN matching (ALL values must be in allowed list)
     in_pattern = rf"""`?({pattern_fields})`?\s+IN\s*$begin:math:text$([^)]+)$end:math:text$"""
@@ -1191,26 +1188,49 @@ def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> boo
         field = raw_field.strip("`")
         target_key = field_aliases.get(field)
         if not target_key:
-            print(f"⚠️ Field '{field}' not recognized.")
             continue
         allowed_values = allowed_apps.get(target_key, [])
         values = re.findall(r"""['"]([^'"]+)['"]""", raw_values)
 
-        print(f"🔍 IN clause on '{field}', checking values: {values}")
         unmatched = [val for val in values if val not in allowed_values]
+        matched = [val for val in values if val in allowed_values]
+
         if unmatched:
             print(f"❌ IN clause failed. These values not in allowed list: {unmatched}")
-            return False
+            return False, None
         else:
-            print("✅ MATCH (IN): All values matched.")
-            return True
+            print(f"✅ MATCH (IN): All values matched → {matched}")
+            return True, ", ".join(matched)  # Join if multiple matched
 
     print("❌ No match found.")
-    return False
+    return False, None
+
+-----
+
+def run_match_on_queries(nrql_queries: List[str], allowed_apps_csv: str):
+    allowed_apps = load_allowed_apps_from_csv(allowed_apps_csv)
+    results = []
+    for query in nrql_queries:
+        match, matched_app = has_matching_app(query, allowed_apps)
+        results.append({
+            "nrql_query": query.strip(),
+            "match": match,
+            "matched_app": matched_app
+        })
+        logging.info(f"📄 Result → query: {query.strip()}, match: {match}, matched_app: {matched_app}")
+    return results
 
 
+----
 
 
+match_results = run_match_on_queries(transformed, OTEL_APPS_FILE)
 
+matched_app_names = [r["matched_app"] for r in match_results if r["match"]]
+if matched_app_names:
+    logging.info(f"✅ found app match for widget {widget.get('id')} → {matched_app_names}")
+else:
+    logging.info(f"❌ no app match for widget {widget.get('id')} → query: {transformed}")
+    continue
 
 
