@@ -1161,43 +1161,52 @@ def has_matching_app(nrql_query: str, allowed_apps: Dict[str, List[str]]) -> boo
     # Pattern for = or LIKE
     simple_pattern = rf"""`?({pattern_fields})`?\s*(=|LIKE)\s*(['"])(.*?)(?<!\\)\3"""
     for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
-        field, operator, _, value = match.groups()
+        raw_field, operator, _, value = match.groups()
+        field = raw_field.strip("`")  # Strip backticks
         target_key = field_aliases.get(field)
         if not target_key:
+            print(f"⚠️ Field '{field}' not recognized.")
             continue
         allowed_values = allowed_apps.get(target_key, [])
+
+        print(f"🔍 Matching field: {field}, operator: {operator}, value: '{value}'")
         
         if operator.upper() == "LIKE":
             for allowed in allowed_values:
+                print(f"  ⏳ LIKE check: does '{allowed}' start with '{value.rstrip('%')}'?")
                 if allowed.startswith(value.rstrip('%')):
+                    print(f"✅ MATCH (LIKE): '{allowed}' starts with '{value.rstrip('%')}'")
                     return True
         elif operator == "=":
-            if value in allowed_values:
-                return True
+            for allowed in allowed_values:
+                print(f"  ⏳ EQUAL check: is '{value}' == '{allowed}'?")
+                if value == allowed:
+                    print(f"✅ MATCH (=): '{value}' == '{allowed}'")
+                    return True
 
-    # Strict matching for IN clause — all values must be allowed
-    in_pattern = rf"""`?({pattern_fields})`?\s+IN\s*\(([^)]+)\)"""
+    # Strict IN matching (ALL values must be in allowed list)
+    in_pattern = rf"""`?({pattern_fields})`?\s+IN\s*$begin:math:text$([^)]+)$end:math:text$"""
     for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
-        field, raw_values = match.groups()
+        raw_field, raw_values = match.groups()
+        field = raw_field.strip("`")
         target_key = field_aliases.get(field)
         if not target_key:
+            print(f"⚠️ Field '{field}' not recognized.")
             continue
         allowed_values = allowed_apps.get(target_key, [])
         values = re.findall(r"""['"]([^'"]+)['"]""", raw_values)
-        
-        if not values:  # Empty IN clause
+
+        print(f"🔍 IN clause on '{field}', checking values: {values}")
+        unmatched = [val for val in values if val not in allowed_values]
+        if unmatched:
+            print(f"❌ IN clause failed. These values not in allowed list: {unmatched}")
             return False
-        
-        if all(val in allowed_values for val in values):
-            return True
         else:
-            return False  # strict: one or more not allowed
+            print("✅ MATCH (IN): All values matched.")
+            return True
 
+    print("❌ No match found.")
     return False
-
-
-
-
 
 
 
