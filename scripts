@@ -1235,14 +1235,12 @@ else:
 
 
 ----
-
-
 import json
+import logging
+import asyncio
 from collections import Counter
 from typing import List, Dict, Any
 import aiohttp
-import asyncio
-import logging
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
@@ -1257,7 +1255,6 @@ async def validate_batch(
     if not session or session.closed:
         raise ValueError("Invalid or closed session")
 
-    # Filter only rows needing validation
     current_batch = [
         row for row in batch
         if row["widget"].get("validation") not in ["failed", "timeout", "success", "result_0", "no_data"]
@@ -1286,14 +1283,22 @@ async def validate_batch(
             alias_map[alias] = i
             account_id = row["accountIds"]
 
-            # ✅ Escape the query using json.dumps for GraphQL safety
-            query = json.dumps(row["query"].strip())
+            # ✅ Safely escape query (no json.dumps)
+            query = (
+                row["query"]
+                .replace("\\", "\\\\")   # escape backslashes
+                .replace('"', '\\"')     # escape double quotes
+                .replace("\n", " ")      # flatten newlines
+                .replace("\r", " ")      # remove carriage returns
+                .replace("\t", " ")      # remove tabs
+                .strip()
+            )
 
             query_parts.append(f"""
                 {alias}: actor {{
                     nrql(
                         accounts: {account_id}
-                        query: {query}
+                        query: "{query}"
                         timeout: 60
                     ) {{
                         results
@@ -1346,7 +1351,7 @@ async def validate_batch(
                 total_results[i] = "no_data"
                 continue
 
-            # ✅ Flatten all nested values across all rows
+            # ✅ Flatten all nested values
             def extract_values(d):
                 for v in d.values():
                     if isinstance(v, dict):
@@ -1368,12 +1373,12 @@ async def validate_batch(
             else:
                 total_results[i] = "success"
 
-    # Mark leftovers as timeout
+    # Handle any remaining pending items
     for i, result in enumerate(total_results):
         if result == "pending":
             total_results[i] = "timeout"
 
-    # ✅ Update current_batch and full batch with validation results
+    # ✅ Apply validation results to widgets
     for i, row in enumerate(current_batch):
         row["widget"]["validation"] = total_results[i]
 
@@ -1382,7 +1387,6 @@ async def validate_batch(
         if row.get("widget", {}).get("validation") == "TBD":
             row["widget"]["validation"] = validation_map.get(id(row["widget"]), "skipped")
 
-    # Optional: logging
     result_counts = Counter(total_results)
     summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
     logging.info(f"🧾 Final validation summary: {summary}")
