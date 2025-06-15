@@ -1234,3 +1234,141 @@ else:
     continue
 
 
+----
+
+
+async def validate_batch(
+    batch: List[Dict[str, Any]],
+    session: aiohttp.ClientSession
+) -> List[Dict[str, Any]]:
+    global GLOBAL_ALIAS_COUNTER
+
+    if not session or session.closed:
+        raise ValueError("Invalid or closed session")
+
+    current_batch = [
+        row for row in batch
+        if row["widget"].get("validation") not in ["failed", "timeout", "success", "result_0", "no_data"]
+    ]
+
+    if not current_batch:
+        logging.info("✅ No queries to validate in the current batch.")
+        return batch
+
+    logging.info(f"🔍 Validating {len(current_batch)} queries in the current batch.")
+    total_results = ["pending"] * len(current_batch)
+
+    for attempt in range(MAX_RETRIES):
+        pending_indexes = [i for i, r in enumerate(total_results) if r == "pending"]
+        if not pending_indexes:
+            break
+
+        alias_map = {}
+        query_parts = []
+
+        for i in pending_indexes:
+            row = current_batch[i]
+            alias = f"a{GLOBAL_ALIAS_COUNTER}"
+            GLOBAL_ALIAS_COUNTER += 1
+
+            alias_map[alias] = i
+            query = row["query"].replace('"', '\\"').replace("\n", " ").strip()
+            account_id = row["accountIds"]
+            query_parts.append(f"""
+                {alias}: actor {{
+                    nrql(
+                        accounts: {account_id}
+                        query: "{query}"
+                        timeout: 60
+                    ) {{ results }}
+                }}
+            """)
+
+        if not query_parts:
+            logging.error("❌ No queries to validate.")
+            for i in range(len(current_batch)):
+                total_results[i] = "failed"
+            break
+
+        full_query = "query {\n" + "\n".join(query_parts) + "\n}"
+        logging.info(f"📤 Sending validation query (length: {len(full_query)} chars)")
+        graphql_response = await graphql_query(session, full_query)
+
+        if not graphql_response or "data" not in graphql_response:
+            logging.warning("⚠ No data in response. Retrying...")
+            await asyncio.sleep(RETRY_DELAY)
+            continue
+
+        data = graphql_response.get("data", {})
+        error_paths = {
+            e["path"][0] for e in graphql_response.get("errors", [])
+            if "path" in e
+        } if "errors" in graphql_response else set()
+
+        for alias, i in alias_map.items():
+            if alias in error_paths:
+                total_results[i] = "invalid"
+                logging.warning(f"❌ Alias {alias} = invalid")
+                continue
+
+            alias_node = data.get(alias)
+            if not alias_node:
+                total_results[i] = "failed"
+                logging.error(f"❌ Alias {alias} = missing")
+                continue
+
+            alias_data = alias_node.get("nrql", {})
+            result_block = alias_data.get("results")
+
+            if result_block is None:
+                total_results[i] = "timeout"
+                logging.warning(f"⌛ Alias {alias} = timeout (no result block)")
+                continue
+
+            if isinstance(result_block, list) and len(result_block) == 0:
+                total_results[i] = "no_data"
+                continue
+
+            # Flatten all values (including nested)
+            def extract_values(d):
+                for v in d.values():
+                    if isinstance(v, dict):
+                        yield from extract_values(v)
+                    else:
+                        yield v
+
+            all_values = []
+            for row_block in result_block:
+                if isinstance(row_block, dict):
+                    all_values.extend(list(extract_values(row_block)))
+
+            filtered_values = [v for v in all_values if v not in ["beginTimeSeconds", "endTimeSeconds", "inspectedCount"]]
+
+            if not filtered_values:
+                total_results[i] = "no_data"
+            elif all(v == 0 or v == "0.0" for v in filtered_values):
+                total_results[i] = "result_0"
+            else:
+                total_results[i] = "success"
+
+    # Mark leftovers as timeout
+    for i, result in enumerate(total_results):
+        if result == "pending":
+            total_results[i] = "timeout"
+
+    # Update current_batch and batch widgets with validation status
+    for i, row in enumerate(current_batch):
+        row["widget"]["validation"] = total_results[i]
+
+    validation_map = {id(row["widget"]): row["widget"]["validation"] for row in current_batch}
+    for row in batch:
+        if row.get("widget", {}).get("validation") == "TBD":
+            row["widget"]["validation"] = validation_map.get(id(row["widget"]), "skipped")
+
+    result_counts = Counter(total_results)
+    summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
+    logging.info(f"🧾 Final validation summary: {summary}")
+
+    return batch
+
+
