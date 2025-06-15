@@ -1415,5 +1415,77 @@ async def validate_batch(batch: List[Dict[str, Any]], session: aiohttp.ClientSes
     summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
     logging.info(f"🧾 Final validation summary: {summary}")
 
-    return batch
+    return batch 
+
+
+-----
+
+# --- Alias validation block ---
+try:
+    alias_node = data.get(alias)
+    if not alias_node:
+        total_results[i] = "failed"
+        logging.error(f"[{alias}] ❌ alias_node is missing")
+        continue
+
+    alias_data = alias_node.get("nrql", {})
+    result_block = alias_data.get("results")
+    logging.debug(f"[{alias}] Initial result_block: {result_block}")
+
+    fallback_triggered = (
+        not result_block or
+        all(
+            isinstance(r, dict) and all(v is None for v in r.values())
+            for r in result_block
+        )
+    )
+    logging.debug(f"[{alias}] Trigger fallback: {fallback_triggered}")
+
+    if fallback_triggered:
+        logging.debug(f"[{alias}] Triggered fallback to timeSeries")
+        result_block = []
+        for ts in alias_data.get("timeSeries", []):
+            if isinstance(ts, dict) and isinstance(ts.get("results"), list):
+                logging.debug(f"[{alias}] Adding results from timeSeries entry: {ts['results']}")
+                result_block.extend(ts["results"])
+
+    logging.debug(f"[{alias}] result_block after timeSeries fallback: {result_block}")
+
+    numeric_values = []
+
+    def extract_numeric_values(d):
+        for v in d.values():
+            if isinstance(v, dict):
+                yield from extract_numeric_values(v)
+            elif isinstance(v, (int, float)):
+                yield v
+
+    for row_block in result_block:
+        if isinstance(row_block, dict):
+            values = list(extract_numeric_values(row_block))
+            logging.debug(f"[{alias}] Values extracted from {row_block}: {values}")
+            numeric_values.extend(values)
+
+    numeric_values = [v for v in numeric_values if isinstance(v, (int, float))]
+    logging.debug(f"[{alias}] Filtered numeric values: {numeric_values}")
+
+    if result_block is None:
+        total_results[i] = "timeout"
+    elif isinstance(result_block, list) and len(result_block) == 0:
+        total_results[i] = "no_data"
+    elif not numeric_values:
+        total_results[i] = "no_data"
+    elif all(v == 0 for v in numeric_values):
+        total_results[i] = "result_0"
+    else:
+        total_results[i] = "success"
+
+    logging.debug(f"[{alias}] Final classification: {total_results[i]}")
+
+except Exception as e:
+    logging.exception(f"🔥 Unexpected error for alias {alias}: {e}")
+    total_results[i] = "failed"
+
+
+
 
