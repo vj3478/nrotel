@@ -1238,13 +1238,30 @@ else:
 import json
 import logging
 import asyncio
-from collections import Counter
 from typing import List, Dict, Any
+from collections import Counter
 import aiohttp
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 GLOBAL_ALIAS_COUNTER = 0
+
+async def graphql_query(session: aiohttp.ClientSession, payload: Dict[str, str]) -> Dict[str, Any]:
+    url = "https://api.newrelic.com/graphql"  # Adjust if needed
+    headers = {
+        "Content-Type": "application/json",
+        "API-Key": "YOUR_NEW_RELIC_API_KEY"  # Replace with actual key or load from env
+    }
+
+    async with session.post(url, json=payload, headers=headers) as resp:
+        if resp.status != 200:
+            logging.error(f"GraphQL failed with status {resp.status}")
+            return {}
+        try:
+            return await resp.json()
+        except Exception as e:
+            logging.error(f"Failed to parse GraphQL JSON: {e}")
+            return {}
 
 async def validate_batch(
     batch: List[Dict[str, Any]],
@@ -1279,18 +1296,17 @@ async def validate_batch(
             row = current_batch[i]
             alias = f"a{GLOBAL_ALIAS_COUNTER}"
             GLOBAL_ALIAS_COUNTER += 1
-
             alias_map[alias] = i
             account_id = row["accountIds"]
 
-            # ✅ Safely escape query (no json.dumps)
+            # ✅ Safe manual escaping for NRQL
             query = (
                 row["query"]
-                .replace("\\", "\\\\")   # escape backslashes
-                .replace('"', '\\"')     # escape double quotes
-                .replace("\n", " ")      # flatten newlines
-                .replace("\r", " ")      # remove carriage returns
-                .replace("\t", " ")      # remove tabs
+                .replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .replace("\t", " ")
                 .strip()
             )
 
@@ -1314,7 +1330,8 @@ async def validate_batch(
 
         full_query = "query {\n" + "\n".join(query_parts) + "\n}"
         logging.info(f"📤 Sending validation query (length: {len(full_query)} chars)")
-        graphql_response = await graphql_query(session, full_query)
+
+        graphql_response = await graphql_query(session, {"query": full_query})
 
         if not graphql_response or "data" not in graphql_response:
             logging.warning("⚠ No data in response. Retrying...")
@@ -1329,7 +1346,7 @@ async def validate_batch(
 
         for alias, i in alias_map.items():
             if alias in error_paths:
-                total_results[i] = "failed"
+                total_results[i] = "invalid"
                 logging.warning(f"❌ Alias {alias} = invalid")
                 continue
 
@@ -1351,7 +1368,7 @@ async def validate_batch(
                 total_results[i] = "no_data"
                 continue
 
-            # ✅ Flatten all nested values
+            # ✅ Combined support for flat + nested multiple-dict results
             def extract_values(d):
                 for v in d.values():
                     if isinstance(v, dict):
@@ -1364,21 +1381,24 @@ async def validate_batch(
                 if isinstance(row_block, dict):
                     all_values.extend(list(extract_values(row_block)))
 
-            filtered_values = [v for v in all_values if v not in ["beginTimeSeconds", "endTimeSeconds", "inspectedCount"]]
+            filtered_values = [
+                v for v in all_values
+                if v not in ["beginTimeSeconds", "endTimeSeconds", "inspectedCount"]
+            ]
 
-            if not filtered_values:
+            if not filtered_values or all(v is None for v in filtered_values):
                 total_results[i] = "no_data"
             elif all(v == 0 or v == "0.0" for v in filtered_values):
                 total_results[i] = "result_0"
             else:
                 total_results[i] = "success"
 
-    # Handle any remaining pending items
+    # Final pass: mark leftover pending as timeout
     for i, result in enumerate(total_results):
         if result == "pending":
             total_results[i] = "timeout"
 
-    # ✅ Apply validation results to widgets
+    # ✅ Update widgets
     for i, row in enumerate(current_batch):
         row["widget"]["validation"] = total_results[i]
 
