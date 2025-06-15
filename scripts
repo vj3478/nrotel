@@ -1237,6 +1237,17 @@ else:
 ----
 
 
+import json
+from collections import Counter
+from typing import List, Dict, Any
+import aiohttp
+import asyncio
+import logging
+
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+GLOBAL_ALIAS_COUNTER = 0
+
 async def validate_batch(
     batch: List[Dict[str, Any]],
     session: aiohttp.ClientSession
@@ -1246,6 +1257,7 @@ async def validate_batch(
     if not session or session.closed:
         raise ValueError("Invalid or closed session")
 
+    # Filter only rows needing validation
     current_batch = [
         row for row in batch
         if row["widget"].get("validation") not in ["failed", "timeout", "success", "result_0", "no_data"]
@@ -1272,15 +1284,20 @@ async def validate_batch(
             GLOBAL_ALIAS_COUNTER += 1
 
             alias_map[alias] = i
-            query = row["query"].replace('"', '\\"').replace("\n", " ").strip()
             account_id = row["accountIds"]
+
+            # ✅ Escape the query using json.dumps for GraphQL safety
+            query = json.dumps(row["query"].strip())
+
             query_parts.append(f"""
                 {alias}: actor {{
                     nrql(
                         accounts: {account_id}
-                        query: "{query}"
+                        query: {query}
                         timeout: 60
-                    ) {{ results }}
+                    ) {{
+                        results
+                    }}
                 }}
             """)
 
@@ -1307,7 +1324,7 @@ async def validate_batch(
 
         for alias, i in alias_map.items():
             if alias in error_paths:
-                total_results[i] = "invalid"
+                total_results[i] = "failed"
                 logging.warning(f"❌ Alias {alias} = invalid")
                 continue
 
@@ -1329,7 +1346,7 @@ async def validate_batch(
                 total_results[i] = "no_data"
                 continue
 
-            # Flatten all values (including nested)
+            # ✅ Flatten all nested values across all rows
             def extract_values(d):
                 for v in d.values():
                     if isinstance(v, dict):
@@ -1356,7 +1373,7 @@ async def validate_batch(
         if result == "pending":
             total_results[i] = "timeout"
 
-    # Update current_batch and batch widgets with validation status
+    # ✅ Update current_batch and full batch with validation results
     for i, row in enumerate(current_batch):
         row["widget"]["validation"] = total_results[i]
 
@@ -1365,10 +1382,10 @@ async def validate_batch(
         if row.get("widget", {}).get("validation") == "TBD":
             row["widget"]["validation"] = validation_map.get(id(row["widget"]), "skipped")
 
+    # Optional: logging
     result_counts = Counter(total_results)
     summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
     logging.info(f"🧾 Final validation summary: {summary}")
 
     return batch
-
 
