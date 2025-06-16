@@ -1703,4 +1703,88 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
     return batch
 
 
+---
+
+
+from collections import Counter
+import logging
+
+def process_graphql_validation(data, alias_map, error_paths, current_batch):
+    total_results = [None] * len(alias_map)
+
+    for alias, i in alias_map.items():
+        if alias in error_paths:
+            total_results[i] = "invalid"
+            logging.warning(f"❌ Alias ({alias}) = invalid")
+            continue
+
+        alias_node = data.get(alias)
+        if not alias_node:
+            total_results[i] = "failed"
+            logging.error(f"❌ Alias ({alias}) = missing from response data")
+            continue
+
+        result_block = alias_node.get("widget", {}).get("results") or alias_node.get("results")
+        if result_block is None:
+            total_results[i] = "timeout"
+            logging.warning(f"⚠️ Alias ({alias}) = timeout (no results block)")
+            continue
+
+        if not isinstance(result_block, list) or len(result_block) == 0:
+            total_results[i] = "no_data"
+            logging.debug(f"⚠️ Alias ({alias}) = no_data (empty results)")
+            continue
+
+        # Deep extract numeric values
+        def extract_numeric_values(v):
+            if isinstance(v, dict):
+                for val in v.values():
+                    yield from extract_numeric_values(val)
+            elif isinstance(v, (int, float)) and v is not None:
+                yield v
+
+        numeric_values = []
+        for row_block in result_block:
+            if isinstance(row_block, dict):
+                numeric_values.extend(list(extract_numeric_values(row_block)))
+
+        values = [v for v in numeric_values if isinstance(v, (int, float))]
+        logging.debug(f"[{alias}] Extracted numeric values: {values}")
+
+        if not values:
+            total_results[i] = "no_data"
+        elif all(v == 0 for v in values):
+            total_results[i] = "result_0"
+        elif any(v > 0 for v in values):
+            total_results[i] = "success"
+        else:
+            total_results[i] = "no_data"
+
+    # Mark any unset results as pending
+    for i, result in enumerate(total_results):
+        if result is None:
+            total_results[i] = "pending"
+
+    # Deduplicate per widget using the last known position in batch
+    widget_id_to_index = {}
+    for i, row in enumerate(current_batch):
+        widget_id = row["widget"].get("id", "")
+        widget_id_to_index[widget_id] = i
+
+    widget_validations = {}
+    for widget_id, i in widget_id_to_index.items():
+        widget_validations[widget_id] = total_results[i]
+
+    for row in current_batch:
+        widget_id = row["widget"].get("id", "")
+        row["validation"] = widget_validations.get(widget_id, "TBD")
+
+    # Count and log result summary
+    result_counts = Counter(widget_validations.values())
+    summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
+    logging.info(f"📊 Validation Summary: {summary}")
+
+
+
+
 
