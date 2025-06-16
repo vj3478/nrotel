@@ -1,4 +1,4 @@
-import re
+iimport re
 
 def update_span_query_columns(nrql_query, mapper):
     """
@@ -2102,11 +2102,6 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
             }}
             """)
 
-        if not query_parts:
-            for i in pending_indexes:
-                total_results[i] = "failed"
-            break
-
         full_query = "query {\n" + "\n".join(query_parts) + "\n}"
         graphql_response = await graphql_query(session, {"query": full_query})
 
@@ -2119,15 +2114,12 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
         error_paths = {e["path"][0] for e in graphql_response.get("errors", [])} if "errors" in graphql_response else set()
 
         for alias, i in alias_map.items():
+            row = current_batch[i]
             if alias in error_paths:
                 total_results[i] = "invalid"
                 continue
 
             alias_node = data.get(alias)
-            if not alias_node:
-                total_results[i] = "failed"
-                continue
-
             result_block = (
                 alias_node.get("nrql", {}).get("results")
                 or alias_node.get("results")
@@ -2142,55 +2134,45 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
                 total_results[i] = "no_data"
                 continue
 
-            # --- New logic: exclude known non-metric metadata keys ---
-            non_metric_keys = {
-                "beginTimeSeconds",
-                "endTimeSeconds",
-                "timestamp",
-                "inspectedCount",
-                "facet"
-            }
-
+            non_metric_keys = {"beginTimeSeconds", "endTimeSeconds", "timestamp", "inspectedCount", "facet"}
             numeric_values = []
+
             for row_block in result_block:
                 if isinstance(row_block, dict):
                     for key, val in row_block.items():
                         if key not in non_metric_keys and isinstance(val, (int, float)) and val is not None:
                             numeric_values.append(val)
 
-            values = [v for v in numeric_values if isinstance(v, (int, float))]
-
-            if not values:
+            if not numeric_values:
                 total_results[i] = "no_data"
-            elif all(v == 0 for v in values):
+            elif all(v == 0 for v in numeric_values):
                 total_results[i] = "result_0"
-            elif any(v > 0 for v in values):
-                total_results[i] = "success"
             else:
-                total_results[i] = "no_data"
+                total_results[i] = "success"
 
-    # Final fallback: timeout any that remain pending
-    for i, result in enumerate(total_results):
-        if result is None or result == "pending":
+    # Final fallback: mark leftovers as timeout
+    for i, r in enumerate(total_results):
+        if r == "pending":
             total_results[i] = "timeout"
 
-    # Assign classification directly to the row
-    for i in range(len(current_batch)):
-        current_batch[i]["validation"] = total_results[i]
-
-    # Deduplicate by widget ID
-    deduped = {}
-    for row in current_batch:
+    # Write results back to widgets
+    widget_id_to_result = {}
+    for i, row in enumerate(current_batch):
+        validation_result = total_results[i]
+        row["validation"] = validation_result
         widget_id = row["widget"].get("id")
         if widget_id:
-            deduped[widget_id] = row
+            widget_id_to_result[widget_id] = validation_result
 
-    current_batch[:] = list(deduped.values())
+    # Update main batch rows as well
+    for row in batch:
+        widget_id = row["widget"].get("id")
+        if widget_id in widget_id_to_result:
+            row["validation"] = widget_id_to_result[widget_id]
 
-    # Log final summary
+    # Log classification summary
     from collections import Counter
-    result_counts = Counter(row["validation"] for row in current_batch)
-    summary = ", ".join(f"{k}: {v}" for k, v in result_counts.items())
-    logging.info(f"📊 Final validation summary: {summary}")
+    result_counts = Counter(r["validation"] for r in batch)
+    logging.info(f"✅ Final validation summary: {dict(result_counts)}")
 
     return batch
