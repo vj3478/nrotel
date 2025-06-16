@@ -2055,7 +2055,6 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
 
 
 ----
-
 async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str, Any]]:
     global GLOBAL_ALIAS_COUNTER
 
@@ -2143,18 +2142,21 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
                 total_results[i] = "no_data"
                 continue
 
-            # Extract numeric values (ignore nulls)
-            def extract_numeric_values(d):
-                for v in d.values():
-                    if isinstance(v, dict):
-                        yield from extract_numeric_values(v)
-                    elif isinstance(v, (int, float)) and v is not None:
-                        yield v
+            # --- New logic: exclude known non-metric metadata keys ---
+            non_metric_keys = {
+                "beginTimeSeconds",
+                "endTimeSeconds",
+                "timestamp",
+                "inspectedCount",
+                "facet"
+            }
 
             numeric_values = []
             for row_block in result_block:
                 if isinstance(row_block, dict):
-                    numeric_values.extend(list(extract_numeric_values(row_block)))
+                    for key, val in row_block.items():
+                        if key not in non_metric_keys and isinstance(val, (int, float)) and val is not None:
+                            numeric_values.append(val)
 
             values = [v for v in numeric_values if isinstance(v, (int, float))]
 
