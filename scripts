@@ -1941,6 +1941,9 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
 
     if not current_batch:
         logging.info("⚠️ No queries to validate in the current batch.")
+        for row in batch:
+            if "validation" not in row:
+                row["validation"] = "failed"
         return batch
 
     total_results = ["pending"] * len(current_batch)
@@ -1969,68 +1972,68 @@ async def validate_batch(batch: List[Dict[str, Any]], session) -> List[Dict[str,
     full_query = "query {\n" + "\n".join(query_parts) + "\n}"
     graphql_response = await graphql_query(session, {"query": full_query})
 
-    if not graphql_response or "data" not in graphql_response:
-        logging.warning("❌ GraphQL response missing or empty.")
-        for i in range(len(total_results)):
-            total_results[i] = "timeout"
-    else:
-        data = graphql_response["data"]
-        error_paths = {e["path"][0] for e in graphql_response.get("errors", [])} if "errors" in graphql_response else set()
+    data = graphql_response.get("data", {}) if graphql_response else {}
+    error_paths = {e["path"][0] for e in graphql_response.get("errors", [])} if graphql_response and "errors" in graphql_response else set()
 
-        for alias, i in alias_map.items():
-            result = "timeout"
-            try:
-                alias_node = data.get(alias)
-                if not alias_node or alias in error_paths:
-                    result = "invalid"
+    non_metric_keys = {"beginTimeSeconds", "endTimeSeconds", "timestamp", "inspectedCount", "facet"}
+
+    for alias, i in alias_map.items():
+        result = "timeout"
+        try:
+            alias_node = data.get(alias)
+            if alias in error_paths or alias_node is None:
+                result = "invalid"
+            else:
+                result_block = alias_node.get("nrql", {}).get("results")
+                if not isinstance(result_block, list) or not result_block:
+                    result = "no_data"
                 else:
-                    result_block = alias_node.get("nrql", {}).get("results")
-                    if not isinstance(result_block, list) or not result_block:
+                    numeric_values = []
+                    for row_block in result_block:
+                        if isinstance(row_block, dict):
+                            for k, v in row_block.items():
+                                if k not in non_metric_keys and isinstance(v, (int, float)):
+                                    numeric_values.append(v)
+
+                    if not numeric_values:
                         result = "no_data"
+                    elif all(v == 0 for v in numeric_values):
+                        result = "result_0"
                     else:
-                        non_metric_keys = {
-                            "beginTimeSeconds", "endTimeSeconds",
-                            "timestamp", "inspectedCount", "facet"
-                        }
-                        numeric_values = []
-                        for row_block in result_block:
-                            if isinstance(row_block, dict):
-                                for k, v in row_block.items():
-                                    if k not in non_metric_keys and isinstance(v, (int, float)):
-                                        numeric_values.append(v)
-                        if not numeric_values:
-                            result = "no_data"
-                        elif all(v == 0 for v in numeric_values):
-                            result = "result_0"
-                        else:
-                            result = "success"
-            except Exception as e:
-                logging.warning(f"⚠️ Exception in classification for alias {alias}: {e}")
-                result = "failed"
+                        result = "success"
+        except Exception as e:
+            logging.warning(f"⚠️ Error classifying alias {alias}: {e}")
+            result = "failed"
 
-            total_results[i] = result
-            current_batch[i]["validation"] = result
+        total_results[i] = result
+        current_batch[i]["validation"] = result
 
-    # Final fallback for any missed
-    for i, result in enumerate(total_results):
-        if result == "pending":
+    # Final fallback: mark any unset ones as timeout
+    for i, r in enumerate(total_results):
+        if r == "pending":
             total_results[i] = "timeout"
             current_batch[i]["validation"] = "timeout"
 
-    # Sync back to batch using widget ID
-    widget_id_to_validation = {
-        row["widget"].get("id"): row.get("validation", "failed")
+    # Build mapping from widget id to validation
+    widget_id_to_result = {
+        row.get("widget", {}).get("id"): row.get("validation", "timeout")
         for row in current_batch
-        if row.get("widget") and row["widget"].get("id")
+        if row.get("widget", {}).get("id")
     }
 
+    # Apply to batch
     for row in batch:
-        wid = row.get("widget", {}).get("id")
-        row["validation"] = widget_id_to_validation.get(wid, "timeout")
+        widget = row.get("widget", {})
+        widget_id = widget.get("id")
+        row["validation"] = widget_id_to_result.get(widget_id, row.get("validation", "timeout"))
 
-    # Log final count
+    # Guarantee validation exists on every row
+    for row in batch:
+        if "validation" not in row:
+            row["validation"] = "timeout"
+
+    # Final summary log
     from collections import Counter
-    result_summary = Counter(row["validation"] for row in batch)
-    logging.info(f"✅ Final result summary: {dict(result_summary)}")
+    logging.info(f"✅ Final classification summary: {dict(Counter(row['validation'] for row in batch))}")
 
     return batch
