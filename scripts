@@ -1486,6 +1486,87 @@ except Exception as e:
     logging.exception(f"🔥 Unexpected error for alias {alias}: {e}")
     total_results[i] = "failed"
 
+----
+
+import re
+import logging
+from typing import Dict, List, Tuple, Optional
+
+def has_matching_app(
+    nrql_query: str,
+    allowed_apps: Dict[str, List[str]]
+) -> Tuple[bool, Optional[str]]:
+    """
+    Checks whether a NRQL query includes a service.name, entity.name, or entity.guid
+    that matches allowed apps.
+
+    Returns:
+        (match_found: bool, matched_value: Optional[str])
+    """
+    normalized_allowed = {
+        "service_or_entity": [v.strip().lower() for v in allowed_apps.get("service_or_entity", [])],
+        "entity.guid": [v.strip().lower() for v in allowed_apps.get("entity.guid", [])],
+    }
+
+    field_aliases = {
+        "service.name": "service_or_entity",
+        "entity.name": "service_or_entity",
+        "entity.guid": "entity.guid",
+    }
+
+    pattern_fields = "|".join(re.escape(f) for f in field_aliases)
+    quote_chars = r"['\"`]"  # ', ", and ` supported
+
+    # --- = or LIKE clause ---
+    simple_pattern = rf"""({quote_chars}*({pattern_fields}){quote_chars}*)\s*(=|LIKE)\s*({quote_chars})(.*?)(?<!\\)\4"""
+    for match in re.finditer(simple_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        raw_field, inner_field, operator, _, raw_value = match.groups()
+        field_clean = inner_field.strip().lower()
+        target_key = field_aliases.get(field_clean)
+
+        if not target_key:
+            logging.info(f"⚠️ Unrecognized field: {field_clean}")
+            continue
+
+        allowed = normalized_allowed.get(target_key, [])
+        value = raw_value.strip().lower()
+
+        if operator.upper() == "=" and value in allowed:
+            logging.info(f"✅ MATCH '=': {field_clean} = {value}")
+            return True, value
+
+        if operator.upper() == "LIKE":
+            for allowed_val in allowed:
+                if allowed_val.startswith(value.rstrip('%')):
+                    logging.info(f"✅ MATCH LIKE: {allowed_val} starts with {value}")
+                    return True, allowed_val
+
+    # --- IN clause ---
+    in_pattern = rf"""({quote_chars}*({pattern_fields}){quote_chars}*)\s+IN\s*\((.*?)\)"""
+    for match in re.finditer(in_pattern, nrql_query, flags=re.IGNORECASE | re.DOTALL):
+        raw_field, inner_field, raw_values = match.groups()
+        field_clean = inner_field.strip().lower()
+        target_key = field_aliases.get(field_clean)
+
+        if not target_key:
+            logging.info(f"⚠️ Unrecognized field: {field_clean}")
+            continue
+
+        allowed = normalized_allowed.get(target_key, [])
+        values = re.findall(rf"{quote_chars}(.*?)(?<!\\){quote_chars}", raw_values)
+        allowed_set = set(v.strip().lower() for v in allowed)
+
+        for val in values:
+            val_normalized = val.strip().lower()
+            if val_normalized in allowed_set:
+                logging.info(f"✅ MATCH IN: {val_normalized} ∈ {target_key}")
+                return True, val_normalized
+
+        logging.info(f"❌ IN clause values not in allowed list: {values}")
+
+    logging.info("❌ No match found in any clause.")
+    return False, None
+
 
 
 
