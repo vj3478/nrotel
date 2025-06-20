@@ -1,0 +1,35 @@
+var request = require('request');
+
+var options = {
+  method: 'GET',
+  url: 'https://safadsfd.com?customerReferenceId=ssafdsa',
+  headers: {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Api-Key': 'ENROLLMENTAPP',
+    'country-code': 'US',
+    'Channel-Type': 'Web',
+    'Client-Correlation-Id': 'saffds-sdfdsa-sd',
+    'Cookie': 'AWSALB=safdsafdsafds; AWSALBCORS=safdsafdsafds; JSESSIONID=dsfdsafdsaas',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Safari/537.36'
+  },
+  timeout: 10000 // 10 seconds timeout
+};
+
+console.log("🔍 Sending request to:", options.url);
+
+request(options, function (error, response, body) {
+  if (error) {
+    console.error("❌ Request failed:", error);
+    return;
+  }
+
+  console.log("✅ Status Code:", response && response.statusCode);
+  console.log("📄 Response Body:\n", body);
+
+  // Optional: Check if body contains block indicators
+  const blockKeywords = ["Access Denied", "403", "Robot Check", "CAPTCHA"];
+  if (blockKeywords.some(keyword => body.includes(keyword))) {
+    console.warn("🚫 Possible bot detection or WAF block detected.");
+  }
+});
