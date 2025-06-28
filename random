@@ -1,0 +1,51 @@
+get infra agent versions 
+
+ import requests
+
+# Replace with your New Relic User API Key
+API_KEY = "NRAK-XXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+# Endpoint for Infrastructure agents
+API_URL = "https://api.newrelic.com/v2/agents.json"
+
+# Optional: headers for authentication
+HEADERS = {
+    "Api-Key": API_KEY,
+    "Content-Type": "application/json",
+}
+
+def get_infrastructure_agents():
+    agents = []
+    page = 1
+    while True:
+        response = requests.get(API_URL, headers=HEADERS, params={"page": page})
+        if response.status_code != 200:
+            print(f"Error: {response.status_code} - {response.text}")
+            break
+
+        data = response.json()
+        batch = data.get("agents", [])
+        if not batch:
+            break
+
+        for agent in batch:
+            if agent.get("type") == "infrastructure":
+                agents.append({
+                    "host": agent.get("host_display_name"),
+                    "version": agent.get("version"),
+                    "reporting": agent.get("reporting"),
+                })
+
+        page += 1
+
+    return agents
+
+if __name__ == "__main__":
+    agents = get_infrastructure_agents()
+    if agents:
+        print(f"{'Host':30} {'Version':20} Reporting")
+        print("-" * 60)
+        for agent in agents:
+            print(f"{agent['host'][:30]:30} {agent['version']:20} {agent['reporting']}")
+    else:
+        print("No infrastructure agents found or failed to fetch data.")
