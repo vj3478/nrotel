@@ -268,21 +268,34 @@ def run_nrql(account_id, nrql_query):
     response.raise_for_status()
     return response.json()["data"]["actor"]["account"]["nrql"]["results"]
 
-def export_to_csv(rows, filename="infra_agent_versions.csv"):
+def flatten_dict(d, parent_key='', sep='.'):
+    items = {}
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.update(flatten_dict(v, new_key, sep=sep))
+        else:
+            items[new_key] = v
+    return items
+
+def export_to_csv(rows, filename="infra_agent_nrql_versions.csv"):
+    # Flatten all rows
+    flat_rows = [flatten_dict(row) for row in rows]
+
     # Collect all unique column keys
     all_keys = set()
-    for row in rows:
+    for row in flat_rows:
         all_keys.update(row.keys())
 
     headers = sorted(list(all_keys))
 
+    # Write to CSV
     with open(filename, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(flat_rows)
 
-    print(f"\n✅ Exported {len(rows)} rows to {filename}")
-
+    print(f"\nExported {len(rows)} rows to {filename}")
 # === Main ===
 
 def main():
