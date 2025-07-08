@@ -106,7 +106,6 @@ def export_entities_to_csv(json_data, output_csv_file):
 -----
 
 
-
 import requests
 import csv
 
@@ -121,14 +120,27 @@ HEADERS = {
 QUERY = """
 query($cursor: String) {
   actor {
-    entitySearch(queryBuilder: {domain: INFRA, type: HOST}) {
+    entitySearch(
+      queryBuilder: {
+        domain: INFRA
+        type: IMAGE
+        tags: [{ key: "account", value: "cgc-Cahkjhjkrd-PROD" }]
+      }
+      options: {
+        tagFilter: [
+          "account", "accountId", "aws.accountId", "tags.ASV", "tags.BA",
+          "owner_contact", "tags.OwnerContact", "agentName", "agentVersion",
+          "host.id", "collector.name"
+        ]
+      }
+    ) {
       results(cursor: $cursor) {
         entities {
           account {
             id
             name
           }
-          ... on InfrastructureHostEntityOutline {
+          ... on InfrastructureImageEntityOutline {
             guid
             tags {
               key
@@ -144,8 +156,9 @@ query($cursor: String) {
 """
 
 EXPECTED_TAGS = [
-    "account", "accountId", "agentName", "awsAccountId",
-    "agentVersion", "clusterName"
+    "account", "accountId", "aws.accountId", "tags.ASV", "tags.BA",
+    "owner_contact", "tags.OwnerContact", "agentName", "agentVersion",
+    "host.id", "collector.name"
 ]
 
 def fetch_entities():
@@ -158,11 +171,15 @@ def fetch_entities():
             "variables": {"cursor": cursor}
         }
 
-        response = requests.post(API_URL, headers=HEADERS, json=payload)
-        response.raise_for_status()
+        try:
+            response = requests.post(API_URL, headers=HEADERS, json=payload)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            print(f"⚠️ Request failed: {e}")
+            break
 
         data = response.json()
-        results = data["data"]["actor"]["entitySearch"]["results"]
+        results = data.get("data", {}).get("actor", {}).get("entitySearch", {}).get("results", {})
         entities = results.get("entities", [])
         cursor = results.get("nextCursor")
 
@@ -188,19 +205,18 @@ def fetch_entities():
 
     return all_entities
 
-def save_to_csv(rows, filename="infra_hosts.csv"):
+def save_to_csv(rows, filename="infra_images_filtered.csv"):
     headers = ["account_id", "account_name", "guid"] + EXPECTED_TAGS
-    with open(filename, mode="w", newline="") as f:
+    with open(filename, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Saved {len(rows)} records to {filename}")
+    print(f"Saved {len(rows)} image records to {filename}")
 
 if __name__ == "__main__":
     entities = fetch_entities()
     save_to_csv(entities)
-
 
 -----
 # get infra agent versions using nrql
