@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
 
 -------
-
+# get infra agent veraions using graphql query
 
 import csv
 import json
@@ -201,4 +201,125 @@ if __name__ == "__main__":
     entities = fetch_entities()
     save_to_csv(entities)
 
+
+-----
+# get infra agent versions using nrql
+
+import requests
+import csv
+
+# === Config ===
+API_URL = "https://api.newrelic.com/graphql"
+API_KEY = "YOUR_USER_API_KEY"  # Replace with your New Relic User API key
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "API-Key": API_KEY
+}
+
+NRQL_QUERY = """
+FROM SystemSample 
+SELECT latest(agentVersion) 
+FACET aws.ec2.privateIpAddress, aws.ec2.instanceId, tags.ASV, tags.BA, tags.OwnerContact, agentName, agentVersion 
+LIMIT MAX
+"""
+
+# === GraphQL Queries ===
+ACCOUNTS_QUERY = """
+{
+  actor {
+    accounts {
+      id
+      name
+    }
+  }
+}
+"""
+
+NRQL_GRAPHQL = """
+query($accountId: Int!, $query: Nrql!) {
+  actor {
+    account(id: $accountId) {
+      nrql(query: $query) {
+        results
+      }
+    }
+  }
+}
+"""
+
+# === Functions ===
+
+def get_all_accounts():
+    response = requests.post(API_URL, headers=HEADERS, json={"query": ACCOUNTS_QUERY})
+    response.raise_for_status()
+    data = response.json()
+    return data["data"]["actor"]["accounts"]
+
+def run_nrql(account_id, nrql_query):
+    payload = {
+        "query": NRQL_GRAPHQL,
+        "variables": {
+            "accountId": account_id,
+            "query": nrql_query
+        }
+    }
+    response = requests.post(API_URL, headers=HEADERS, json=payload)
+    response.raise_for_status()
+    return response.json()["data"]["actor"]["account"]["nrql"]["results"]
+
+def export_to_csv(rows, filename="infra_agent_versions.csv"):
+    # Collect all unique column keys
+    all_keys = set()
+    for row in rows:
+        all_keys.update(row.keys())
+
+    headers = sorted(list(all_keys))
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"\n✅ Exported {len(rows)} rows to {filename}")
+
+# === Main ===
+
+def main():
+    accounts = get_all_accounts()
+    all_results = []
+
+    for account in accounts:
+        account_id = account["id"]
+        account_name = account["name"]
+        print(f"🔍 Querying account {account_id} ({account_name})")
+
+        try:
+            results = run_nrql(account_id, NRQL_QUERY)
+
+            if not results:
+                print(f"  ➤ No results for account {account_id} ({account_name})")
+                continue
+
+            for row in results:
+                row["accountId"] = account_id
+                row["accountName"] = account_name
+                all_results.append(row)
+
+        except requests.exceptions.RequestException as req_err:
+            print(f"  ❌ Request failed for account {account_id}: {req_err}")
+        except KeyError as key_err:
+            print(f"  ❌ Unexpected response structure for account {account_id}: {key_err}")
+        except Exception as e:
+            print(f"  ❌ Unknown error for account {account_id}: {e}")
+
+    export_to_csv(all_results)
+
+if __name__ == "__main__":
+    main()
+
+-------
+
+
+ndjdnd
 
