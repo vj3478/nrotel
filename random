@@ -49,3 +49,156 @@ if __name__ == "__main__":
             print(f"{agent['host'][:30]:30} {agent['version']:20} {agent['reporting']}")
     else:
         print("No infrastructure agents found or failed to fetch data.")
+
+
+
+-------
+
+
+import csv
+import json
+
+def export_entities_to_csv(json_data, output_csv_file):
+    # Extract entities
+    entities = json_data.get("data", {}).get("actor", {}).get("entitySearch", {}).get("results", {}).get("entities", [])
+    
+    # Define expected tag keys
+    expected_keys = [
+        "account", "accountId", "agentName", "awsAccountId", 
+        "agentVersion", "clusterName"
+    ]
+
+    # Prepare rows
+    rows = []
+    for entity in entities:
+        row = {
+            "account_id": entity.get("account", {}).get("id"),
+            "account_name": entity.get("account", {}).get("name"),
+            "guid": entity.get("guid"),
+            "name": entity.get("name")
+        }
+
+        # Initialize tags
+        tag_map = {k: None for k in expected_keys}
+
+        for tag in entity.get("tags", []):
+            key = tag.get("key")
+            values = tag.get("values", [])
+            if key in tag_map:
+                tag_map[key] = values[0] if values else None
+
+        # Merge tags into row
+        row.update(tag_map)
+        rows.append(row)
+
+    # Define CSV headers
+    headers = ["account_id", "account_name", "guid", "name"] + expected_keys
+
+    # Write to CSV
+    with open(output_csv_file, "w", newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Exported to {output_csv_file}")
+
+
+-----
+
+
+
+import requests
+import csv
+
+API_KEY = "YOUR_NEW_RELIC_USER_API_KEY"
+API_URL = "https://api.newrelic.com/graphql"
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "API-Key": API_KEY
+}
+
+QUERY = """
+query($cursor: String) {
+  actor {
+    entitySearch(queryBuilder: {domain: INFRA, type: HOST}) {
+      results(cursor: $cursor) {
+        entities {
+          account {
+            id
+            name
+          }
+          ... on InfrastructureHostEntityOutline {
+            guid
+            tags {
+              key
+              values
+            }
+          }
+        }
+        nextCursor
+      }
+    }
+  }
+}
+"""
+
+EXPECTED_TAGS = [
+    "account", "accountId", "agentName", "awsAccountId",
+    "agentVersion", "clusterName"
+]
+
+def fetch_entities():
+    cursor = None
+    all_entities = []
+
+    while True:
+        payload = {
+            "query": QUERY,
+            "variables": {"cursor": cursor}
+        }
+
+        response = requests.post(API_URL, headers=HEADERS, json=payload)
+        response.raise_for_status()
+
+        data = response.json()
+        results = data["data"]["actor"]["entitySearch"]["results"]
+        entities = results.get("entities", [])
+        cursor = results.get("nextCursor")
+
+        for entity in entities:
+            row = {
+                "account_id": entity.get("account", {}).get("id"),
+                "account_name": entity.get("account", {}).get("name"),
+                "guid": entity.get("guid")
+            }
+
+            tags = {k: None for k in EXPECTED_TAGS}
+            for tag in entity.get("tags", []):
+                key = tag.get("key")
+                values = tag.get("values")
+                if key in tags:
+                    tags[key] = values[0] if values else None
+
+            row.update(tags)
+            all_entities.append(row)
+
+        if not cursor:
+            break
+
+    return all_entities
+
+def save_to_csv(rows, filename="infra_hosts.csv"):
+    headers = ["account_id", "account_name", "guid"] + EXPECTED_TAGS
+    with open(filename, mode="w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Saved {len(rows)} records to {filename}")
+
+if __name__ == "__main__":
+    entities = fetch_entities()
+    save_to_csv(entities)
+
+
