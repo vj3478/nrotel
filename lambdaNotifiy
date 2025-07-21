@@ -1,0 +1,200 @@
+docker_tag_notifier/
+│
+├── app/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── docker_checker.py         # Gets today’s Docker tags
+│   ├── sns_notifier.py           # Sends SNS message
+│   ├── jenkins_trigger.py        # Triggers Jenkins job
+│   └── lambda_handler.py         # Entry point for Lambda
+│
+├── tests/
+│   └── test_docker_checker.py    # Unit test for fetch_today_tags
+│
+├── run_local.py                  # Run locally
+├── requirements.txt
+└── README.md
+
+
+----
+app/config.py
+
+import os
+
+SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN")
+JENKINS_URL = os.getenv("JENKINS_URL")  # e.g., https://jenkins.company.com/job/myjob/build
+JENKINS_TOKEN = os.getenv("JENKINS_TOKEN")  # for triggering with token
+
+---
+app/docker_checker.py
+
+import requests
+import logging
+import datetime
+import time
+
+logger = logging.getLogger()
+DOCKER_IMAGES = [
+    "newrelic/synthetics-job-manager",
+    "newrelic/synthetics-ping-runtime",
+    "newrelic/synthetics-node-browser-runtime",
+    "newrelic/synthetics-node-api-runtime",
+]
+
+MAX_RETRIES = 3
+
+def fetch_today_tags(image):
+    url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size=100"
+    retries = 0
+
+    while retries < MAX_RETRIES:
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            tags = response.json().get("results", [])
+            
+            today_utc = datetime.datetime.utcnow().date()
+            new_tags = [
+                tag["name"] for tag in tags
+                if tag["name"] != "latest" and
+                   "last_updated" in tag and
+                   datetime.datetime.fromisoformat(tag["last_updated"].replace("Z", "+00:00")).date() == today_utc
+            ]
+            return new_tags
+        except Exception as e:
+            logger.warning(f"Retry {retries+1} for {image} failed: {e}")
+            retries += 1
+            time.sleep(2 ** retries)
+
+    raise Exception(f"Failed to fetch tags for {image} after {MAX_RETRIES} retries")
+
+def get_new_tags():
+    new_tags = {}
+    for image in DOCKER_IMAGES:
+        today_tags = fetch_today_tags(image)
+        if today_tags:
+            new_tags[image] = today_tags
+    return new_tags
+
+----
+app/sns_notifier.py
+
+import boto3
+import logging
+from app.config import SNS_TOPIC_ARN
+
+logger = logging.getLogger()
+
+def send_sns_notification(image_changes):
+    if not SNS_TOPIC_ARN:
+        raise ValueError("SNS_TOPIC_ARN not set")
+
+    client = boto3.client("sns")
+    message = "\n".join(
+        [f"{img}: {', '.join(tags)}" for img, tags in image_changes.items()]
+    )
+    subject = "🚀 New Docker Tags Detected"
+    response = client.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject,
+        Message=message
+    )
+    logger.info(f"SNS Notification sent: {response}")
+
+
+
+-------
+app/jenkins_trigger.py
+
+import logging
+import requests
+from app.config import JENKINS_URL, JENKINS_TOKEN
+
+logger = logging.getLogger()
+
+def trigger_jenkins():
+    if not (JENKINS_URL and JENKINS_TOKEN):
+        raise ValueError("Missing Jenkins config")
+
+    url = f"{JENKINS_URL}?token={JENKINS_TOKEN}"
+    try:
+        response = requests.post(url)
+        response.raise_for_status()
+        logger.info("Jenkins triggered successfully.")
+    except Exception as e:
+        logger.exception("Failed to trigger Jenkins")
+        raise
+
+
+
+-----
+
+app/lambda_handler.py
+
+
+import logging
+from app.docker_checker import get_new_tags
+from app.sns_notifier import send_sns_notification
+from app.jenkins_trigger import trigger_jenkins
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context=None):
+    try:
+        changes = get_new_tags()
+        if not changes:
+            logger.info("No new tags found today.")
+            return {"status": "No new tags"}
+
+        send_sns_notification(changes)
+        trigger_jenkins()
+        return {"status": "Notifications sent", "changes": changes}
+    except Exception as e:
+        logger.exception("Error in Lambda execution")
+        raise
+
+
+
+---
+tests/test_docker_checker.py
+
+from app.docker_checker import fetch_today_tags
+
+def test_fetch_today_tags():
+    tags = fetch_today_tags("newrelic/synthetics-job-manager")
+    assert isinstance(tags, list)
+    for tag in tags:
+        assert tag != "latest"
+
+
+-----
+run_local.py
+
+import os
+from app.lambda_handler import lambda_handler
+
+# Set environment vars here for local test
+os.environ["SNS_TOPIC_ARN"] = "arn:aws:sns:us-east-1:123456789012:MyTopic"
+os.environ["JENKINS_URL"] = "https://jenkins.example.com/job/myjob/build"
+os.environ["JENKINS_TOKEN"] = "my-jenkins-token"
+
+if __name__ == "__main__":
+    print(lambda_handler({}, None))
+
+
+
+----
+requirements.txt
+
+requests
+boto3
+
+
+
+
+
+
+
+
+
