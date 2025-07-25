@@ -1,0 +1,44 @@
+{
+  actor {
+    account(id: YOUR_ACCOUNT_ID) {
+      alerts {
+        policiesSearch(searchCriteria: {name: "YOUR_POLICY_NAME"}) {
+          policies {
+            name
+            id
+            guid
+          }
+        }
+      }
+    }
+  }
+}
+
+
+----
+
+{
+  actor {
+    account(id: YOUR_ACCOUNT_ID) {
+      aiWorkflows {
+        workflows {
+          id
+          name
+          destinations {
+            name
+            type
+          }
+          conditions {
+            ... on AlertsConditionWorkflowCondition {
+              id
+              name
+              policyGuids
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+
