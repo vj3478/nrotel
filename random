@@ -350,5 +350,24 @@ if __name__ == "__main__":
 -------
 
 
-ndjdnd
+step dunctionnexecutions
+
+SELECT
+  filter(sum(`aws.states.ExecutionsSucceeded`), WHERE true) AS successes,
+  filter(sum(`aws.states.ExecutionsFailed`), WHERE true) AS failures,
+  filter(sum(`aws.states.ExecutionsTimedOut`), WHERE true) AS timeouts,
+  filter(sum(`aws.states.ExecutionsAborted`), WHERE true) AS aborted,
+  filter(
+    sum(`aws.states.ExecutionsSucceeded`) 
+    + sum(`aws.states.ExecutionsFailed`) 
+    + sum(`aws.states.ExecutionsTimedOut`) 
+    + sum(`aws.states.ExecutionsAborted`), 
+    WHERE true
+  ) AS total
+FROM Metric
+WHERE entityName IN ('YourStepFunctionName')
+SINCE 1 hour ago
+
+
+
 
