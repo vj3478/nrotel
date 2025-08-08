@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-## ===== CONFIG =====
+#####################################
+# CONFIGURATION
+#####################################
 ARTIFACTORY_REGISTRY="artifactory.local"
 ARTIFACTORY_NAMESPACE="newrelic"
 ARTIFACTORY_USER="myuser"
@@ -25,10 +27,18 @@ IMAGES=(
   "synthetics-node-browser-runtime"
 )
 
+# MODE options: check | build | push
+MODE="${1:-push}"
+
+#####################################
+# LOGGING
+#####################################
 LOG_FILE="./build_log_$(date +%Y%m%d_%H%M%S).log"
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG_FILE"; }
 
-## ===== FUNCTIONS =====
+#####################################
+# FUNCTIONS
+#####################################
 get_new_tags() {
   local image=$1
   local since_epoch=$(( $(date -u +%s) - LOOKBACK_HOURS*3600 ))
@@ -44,7 +54,7 @@ check_in_registry() {
 }
 
 make_dockerfile() {
-  local image=$1 tag=$2 dir=$3
+  local image=$1 tag=$2
   local needs_user_group=false
   [[ "$image" =~ job-manager|ping-runtime ]] && needs_user_group=true
 
@@ -72,7 +82,7 @@ make_dockerfile() {
     [[ "$image" == "synthetics-ping-runtime" ]] && echo "RUN chmod 755 /data/synthetics-ping-runtime/bin/control || true"
     [[ "$image" == "synthetics-job-manager" ]] && echo "RUN chmod 755 /data/synthetics-job-manager/bin/control || true"
     $needs_user_group && echo "USER runuser"
-  } > "$dir/Dockerfile"
+  } > Dockerfile.generated
 }
 
 send_sns() {
@@ -80,45 +90,67 @@ send_sns() {
   aws sns publish --topic-arn "$SNS_TOPIC_ARN" --region "$AWS_REGION" --subject "$1" --message "$2" >/dev/null
 }
 
-## ===== MAIN =====
+#####################################
+# MAIN
+#####################################
 DOCKER_GID=$(getent group docker | cut -d: -f3 || true)
 
-docker login "$ARTIFACTORY_REGISTRY" -u "$ARTIFACTORY_USER" -p "$ARTIFACTORY_PASSWORD"
+if [[ "$MODE" == "push" || "$MODE" == "build" ]]; then
+  docker login "$ARTIFACTORY_REGISTRY" -u "$ARTIFACTORY_USER" -p "$ARTIFACTORY_PASSWORD"
+fi
 
 built_list=()
+new_tags_found=()
 
 for img in "${IMAGES[@]}"; do
   log "Checking new tags for $img..."
   tags=$(get_new_tags "$img")
-  [[ -z "$tags" ]] && { log "No new tags."; continue; }
+  [[ -z "$tags" ]] && { log "No new tags for $img."; continue; }
   for tag in $tags; do
     target="${ARTIFACTORY_REGISTRY}/${ARTIFACTORY_NAMESPACE}/${img}:${tag}"
     if check_in_registry "$target"; then
       log "Already exists in registry: $target"
       continue
     fi
-    log "Building $target..."
-    tmpdir=$(mktemp -d)
-    make_dockerfile "$img" "$tag" "$tmpdir"
-    docker build \
-      --pull \
-      --build-arg GOLDEN_BASE="$GOLDEN_BASE" \
-      --build-arg BASE_IMAGE_REF="${DOCKERHUB_ORG}/${img}:${tag}" \
-      --build-arg DOCKER_GID="$DOCKER_GID" \
-      --build-arg LABEL_ONE="$LABEL_ONE" \
-      --build-arg LABEL_TWO="$LABEL_TWO" \
-      --build-arg LABEL_THREE="$LABEL_THREE" \
-      -t "$target" "$tmpdir"
-    docker push "$target"
-    rm -rf "$tmpdir"
-    built_list+=("$img:$tag")
+    log "Found new tag: $img:$tag"
+    new_tags_found+=("$img:$tag")
+
+    if [[ "$MODE" == "build" || "$MODE" == "push" ]]; then
+      log "Building $target..."
+      make_dockerfile "$img" "$tag"
+      docker build \
+        --pull \
+        -f Dockerfile.generated \
+        --build-arg GOLDEN_BASE="$GOLDEN_BASE" \
+        --build-arg BASE_IMAGE_REF="${DOCKERHUB_ORG}/${img}:${tag}" \
+        --build-arg DOCKER_GID="$DOCKER_GID" \
+        --build-arg LABEL_ONE="$LABEL_ONE" \
+        --build-arg LABEL_TWO="$LABEL_TWO" \
+        --build-arg LABEL_THREE="$LABEL_THREE" \
+        -t "$target" .
+      rm -f Dockerfile.generated
+    fi
+
+    if [[ "$MODE" == "push" ]]; then
+      log "Pushing $target..."
+      docker push "$target"
+    fi
+
+    [[ "$MODE" != "check" ]] && built_list+=("$img:$tag")
   done
 done
 
-if (( ${#built_list[@]} > 0 )); then
-  msg="Built & pushed: ${built_list[*]}"
+# Summary & SNS (only if new tags found)
+if [[ ${#new_tags_found[@]} -eq 0 ]]; then
+  log "No new tags found in the last ${LOOKBACK_HOURS} hours."
 else
-  msg="No images built."
+  if [[ "$MODE" == "check" ]]; then
+    msg="New tags found: ${new_tags_found[*]}"
+  elif (( ${#built_list[@]} > 0 )); then
+    msg="Built: ${built_list[*]}"
+  else
+    msg="New tags found but no images built."
+  fi
+  log "$msg"
+  send_sns "Docker Build Status" "$msg"
 fi
-log "$msg"
-send_sns "Docker Build Status" "$msg"
