@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+#################################
+# CONFIGURATION
+#################################
+: "${ARTIFACTORY_REGISTRY:=artifactory.local}"
+: "${ARTIFACTORY_NAMESPACE:=newrelic}"
+: "${ARTIFACTORY_USER:=}"
+: "${ARTIFACTORY_PASSWORD:=}"
+
+: "${LABEL_ONE:=1234-itsis1234}"
+: "${LABEL_TWO:=1234-itsisa1234}"
+: "${LABEL_THREE:=email-ss.com}"
+
+: "${GOLDEN_BASE:=artifactory.local.com/languages/java:17-ubuntu24.04-runner-250417}"
+: "${LOOKBACK_HOURS:=24}"
+
+: "${SNS_TOPIC_ARN:=}"     # e.g., arn:aws:sns:us-east-1:123456789012:docker-builds
+: "${AWS_REGION:=us-east-1}"
+
+DOCKERHUB_ORG="newrelic"
+IMAGES=(
+  "synthetics-job-manager"
+  "synthetics-ping-runtime"
+  "synthetics-node-api-runtime"
+  "synthetics-node-browser-runtime"
+)
+
+#################################
+# LOGGING SETUP
+#################################
+LOG_DIR="./logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${LOG_DIR}/build_log_$(date +%Y%m%d_%H%M%S).log"
+
+log() {
+  local ts
+  ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  echo "[$ts] $*" | tee -a "$LOG_FILE"
+}
+
+#################################
+# RETRY HELPERS
+#################################
+retry() {
+  local max=$1; shift
+  local delay=$1; shift
+  local factor=$1; shift
+  local n=1
+  while true; do
+    if "$@"; then return 0; fi
+    if [[ $n -ge $max ]]; then
+      log "ERROR: Command failed after $n attempts: $*"
+      return 1
+    fi
+    log "WARN: Attempt $n/$max failed. Retrying in ${delay}s: $*"
+    sleep "$delay"
+    n=$((n+1))
+    delay=$((delay*factor))
+  done
+}
+
+curl_with_retry() {
+  retry 5 5 2 curl -fsSL --connect-timeout 10 --max-time 40 "$1"
+}
+
+docker_build_with_retry() {
+  retry 3 10 2 docker build "$@"
+}
+
+docker_push_with_retry() {
+  retry 3 10 2 docker push "$1"
+}
+
+docker_login_with_retry() {
+  retry 3 5 2 bash -c "echo '${ARTIFACTORY_PASSWORD}' | docker login '${ARTIFACTORY_REGISTRY}' -u '${ARTIFACTORY_USER}' --password-stdin"
+}
+
+#################################
+# FUNCTIONS
+#################################
+now_epoch() { date -u +%s; }
+
+get_new_tags() {
+  local image="$1"
+  local since_epoch=$(( $(now_epoch) - LOOKBACK_HOURS*3600 ))
+  local url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${image}/tags?page_size=100"
+  curl_with_retry "$url" \
+  | jq -r --argjson since "$since_epoch" '
+      .results[]
+      | select(.name != "latest")
+      | select((.last_updated
+                | sub("Z$"; "")
+                | sub("\\.[0-9]+"; "")
+                | strptime("%Y-%m-%dT%H:%M:%S")
+                | mktime) >= $since)
+      | .name
+    ' | sort -u
+}
+
+make_dockerfile() {
+  local image="$1" tag="$2" workdir="$3"
+  local needs_user_group="false"
+  if [[ "$image" == "synthetics-job-manager" || "$image" == "synthetics-ping-runtime" ]]; then
+    needs_user_group="true"
+  fi
+
+  cat > "${workdir}/Dockerfile" <<'EOF'
+# syntax=docker/dockerfile:1.6
+ARG GOLDEN_BASE
+ARG BASE_IMAGE_REF
+ARG DOCKER_GID
+EOF
+
+  if [[ "$needs_user_group" == "true" ]]; then
+    cat >> "${workdir}/Dockerfile" <<'EOF'
+FROM ${GOLDEN_BASE} AS golden
+EOF
+  fi
+
+  cat >> "${workdir}/Dockerfile" <<'EOF'
+FROM ${BASE_IMAGE_REF}
+USER root
+EOF
+
+  if [[ "$needs_user_group" == "true" && -n "${DOCKER_GID:-}" ]]; then
+    cat >> "${workdir}/Dockerfile" <<'EOF'
+RUN groupadd --gid ${DOCKER_GID} docker \
+ && groupadd -g 54902 jenkins \
+ && useradd -u 54902 -g 54902 jenkins \
+ && useradd -u 2005 runuser \
+ && usermod -aG docker runuser
+
+COPY --from=golden /etc/passwd /etc/passwd
+COPY --from=golden /etc/shadow /etc/shadow
+COPY --from=golden /etc/group  /etc/group
+EOF
+  fi
+
+  cat >> "${workdir}/Dockerfile" <<'EOF'
+ARG LABEL_ONE
+ARG LABEL_TWO
+ARG LABEL_THREE
+LABEL one="${LABEL_ONE}"
+LABEL two="${LABEL_TWO}"
+LABEL three="${LABEL_THREE}"
+EOF
+
+  if [[ "$image" == "synthetics-ping-runtime" ]]; then
+    cat >> "${workdir}/Dockerfile" <<'EOF'
+RUN chmod 755 /data/synthetics-ping-runtime/bin/control || true
+EOF
+  elif [[ "$image" == "synthetics-job-manager" ]]; then
+    cat >> "${workdir}/Dockerfile" <<'EOF'
+RUN chmod 755 /data/synthetics-job-manager/bin/control || true
+EOF
+  fi
+
+  if [[ "$needs_user_group" == "true" ]]; then
+    cat >> "${workdir}/Dockerfile" <<'EOF'
+USER runuser
+EOF
+  fi
+}
+
+build_and_push() {
+  local image="$1" tag="$2" context_dir="$3"
+  local base_ref="${DOCKERHUB_ORG}/${image}:${tag}"
+  local target_ref="${ARTIFACTORY_REGISTRY}/${ARTIFACTORY_NAMESPACE}/${image}:${tag}"
+
+  log "==> Building ${target_ref} (from ${base_ref})"
+  docker_build_with_retry \
+    --pull \
+    --build-arg GOLDEN_BASE="${GOLDEN_BASE}" \
+    --build-arg BASE_IMAGE_REF="${base_ref}" \
+    --build-arg DOCKER_GID="${DOCKER_GID:-}" \
+    --build-arg LABEL_ONE="${LABEL_ONE}" \
+    --build-arg LABEL_TWO="${LABEL_TWO}" \
+    --build-arg LABEL_THREE="${LABEL_THREE}" \
+    -t "${target_ref}" \
+    "${context_dir}"
+
+  log "==> Pushing ${target_ref}"
+  docker_push_with_retry "${target_ref}"
+}
+
+send_sns_notification() {
+  local subject="$1"
+  local message="$2"
+  if [[ -n "${SNS_TOPIC_ARN}" ]]; then
+    aws sns publish \
+      --topic-arn "${SNS_TOPIC_ARN}" \
+      --region "${AWS_REGION}" \
+      --subject "$subject" \
+      --message "$message" >/dev/null
+    log "SNS notification sent."
+  else
+    log "SNS_TOPIC_ARN not set, skipping SNS notification."
+  fi
+}
+
+#################################
+# MAIN
+#################################
+DOCKER_GID="$(getent group docker | awk -F: '{print $3}' || true)"
+
+docker_login_with_retry
+
+found_any="false"
+summary=""
+
+for img in "${IMAGES[@]}"; do
+  log "Checking new tags in last ${LOOKBACK_HOURS}h for ${DOCKERHUB_ORG}/${img} ..."
+  mapfile -t tags < <(get_new_tags "${img}") || tags=()
+  if [[ ${#tags[@]} -eq 0 ]]; then
+    log "No new tags for ${img}."
+    continue
+  fi
+
+  found_any="true"
+  for tag in "${tags[@]}"; do
+    log "-> Found new tag: ${img}:${tag}"
+    workdir="$(mktemp -d)"
+    make_dockerfile "${img}" "${tag}" "${workdir}"
+
+    build_and_push "${img}" "${tag}" "${workdir}"
+    rm -rf "${workdir}"
+    summary+="${img}:${tag} built and pushed\n"
+  done
+done
+
+if [[ "${found_any}" == "false" ]]; then
+  log "No images updated in the last ${LOOKBACK_HOURS} hours. Nothing to build."
+  send_sns_notification "Docker Build Status" "No new images found in the last ${LOOKBACK_HOURS} hours."
+else
+  send_sns_notification "Docker Build Status" "The following images were built and pushed:\n${summary}"
+fi
+
+log "Script completed."
