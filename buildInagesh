@@ -154,3 +154,29 @@ else
   log "$msg"
   send_sns "Docker Build Status" "$msg"
 fi
+
+
+
+get_new_tags() {
+  local image="$1"
+  local since_epoch=$(( $(date -u +%s) - LOOKBACK_HOURS*3600 ))
+
+  curl -fsSL "https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${image}/tags?page_size=100" \
+  | jq -r --argjson since "$since_epoch" '
+      def to_epoch:
+        # Strip fractional seconds, keep trailing Z
+        (.last_updated
+         | gsub("\\..*Z$"; "Z")
+         | strptime("%Y-%m-%dT%H:%M:%SZ")
+         | mktime);
+
+      .results
+      | map(select(.name != "latest"))
+      | sort_by(.last_updated) | reverse
+      | .[0]                          # the single newest tag object
+      | select(to_epoch >= $since)    # keep only if fresh enough
+      | .name // empty
+    '
+}
+
+
