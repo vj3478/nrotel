@@ -155,28 +155,46 @@ else
   send_sns "Docker Build Status" "$msg"
 fi
 
+----
 
-
-get_new_tags() {
+make_dockerfile() {
   local image="$1"
-  local since_epoch=$(( $(date -u +%s) - LOOKBACK_HOURS*3600 ))
+  local file="Dockerfile.generated"
 
-  curl -fsSL "https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${image}/tags?page_size=100" \
-  | jq -r --argjson since "$since_epoch" '
-      def to_epoch:
-        # Strip fractional seconds, keep trailing Z
-        (.last_updated
-         | gsub("\\..*Z$"; "Z")
-         | strptime("%Y-%m-%dT%H:%M:%SZ")
-         | mktime);
+  : > "$file"  # truncate
 
-      .results
-      | map(select(.name != "latest"))
-      | sort_by(.last_updated) | reverse
-      | .[0]                          # the single newest tag object
-      | select(to_epoch >= $since)    # keep only if fresh enough
-      | .name // empty
-    '
+  # Only these images need the golden stage + group/user
+  if [[ "$image" == "dasfda-safd" || "$image" == "sfds-sadds" ]]; then
+    {
+      echo "# syntax=docker/dockerfile:1.6"
+      echo "ARG GOLDEN_BASE"
+      echo "ARG DOCKER_GID"
+      echo "FROM \${GOLDEN_BASE} AS golden"
+      echo "RUN groupadd --gid \${DOCKER_GID} docker"
+      echo "RUN usermod -u 2005 runner"
+      echo "RUN usermod -aG docker runner"
+    } >> "$file"
+  fi
+
+  # Always have final stage FROM
+  echo "FROM \${BASE_IMAGE_REF}" >> "$file"
+
+  if [[ "$image" == "dasfda-safd" || "$image" == "sfds-sadds" ]]; then
+    {
+      echo "COPY --from=golden /etc/passwd /etc/passwd"
+      echo "COPY --from=golden /etc/shadow /etc/shadow"
+      echo "COPY --from=golden /etc/group /etc/group"
+      echo "USER root"
+    } >> "$file"
+
+    # chmod commands per image
+    if [[ "$image" == "dasfda-safd" ]]; then
+      echo "RUN chmod 755 /bin/sh || true" >> "$file"
+    elif [[ "$image" == "sfds-sadds" ]]; then
+      echo "RUN chmod 755 /bin/sh || true" >> "$file"
+    fi
+  fi
+
+  # Always append label
+  echo "LABEL ABC=DEF" >> "$file"
 }
-
-
