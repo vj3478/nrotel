@@ -14,6 +14,7 @@ LABEL_ONE="1234-itsis1234"
 LABEL_TWO="1234-itsisa1234"
 LABEL_THREE="email-ss.com"
 
+# Used only when a golden stage is needed
 GOLDEN_BASE="artifactory.local.com/languages/java:17-ubuntu24.04-runner-250417"
 
 SNS_TOPIC_ARN="arn:aws:sns:us-east-1:123456789012:docker-builds"
@@ -39,14 +40,33 @@ log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG_FILE"; }
 #####################################
 # FUNCTIONS
 #####################################
-get_new_tags() {
+
+# Return ONLY the newest non-"latest" tag updated within LOOKBACK_HOURS.
+# Echoes nothing if none qualify.
+get_newest_tag() {
   local image=$1
   local since_epoch=$(( $(date -u +%s) - LOOKBACK_HOURS*3600 ))
-  curl -s "https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${image}/tags?page_size=100" |
-    jq -r --argjson since "$since_epoch" '
-      .results[] | select(.name != "latest") |
-      select((.last_updated | sub("Z$";"") | sub("\\.[0-9]+";"") | strptime("%Y-%m-%dT%H:%M:%S") | mktime) >= $since) |
-      .name' | sort -u
+  local url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${image}/tags?page_size=100"
+  local data
+  data="$(curl -fsSL "$url")" || { log "Failed to fetch tags for $image"; return 0; }
+
+  jq -r --argjson since "$since_epoch" '
+    (
+      .results
+      | map(
+          select(.name != "latest")
+          | select(
+              (.last_updated
+                | sub("Z$";"")
+                | sub("\\.[0-9]+";"")
+                | strptime("%Y-%m-%dT%H:%M:%S")
+                | mktime
+              ) >= $since
+            )
+        )
+    )
+    | if length>0 then (max_by(.last_updated) | .name) else empty end
+  ' <<<"$data"
 }
 
 check_in_registry() {
@@ -54,35 +74,63 @@ check_in_registry() {
 }
 
 make_dockerfile() {
-  local image=$1 tag=$2
+  local image=$1
   local needs_user_group=false
-  [[ "$image" =~ job-manager|ping-runtime ]] && needs_user_group=true
+  [[ "$image" =~ ^(synthetics-job-manager|synthetics-ping-runtime)$ ]] && needs_user_group=true
 
-  {
-    echo "# syntax=docker/dockerfile:1.6"
-    echo "ARG GOLDEN_BASE"
-    echo "ARG BASE_IMAGE_REF"
-    echo "ARG DOCKER_GID"
-    $needs_user_group && echo "FROM \${GOLDEN_BASE} AS golden"
-    echo "FROM \${BASE_IMAGE_REF}"
-    echo "USER root"
-    if $needs_user_group; then
-      echo "RUN groupadd --gid \${DOCKER_GID} docker \\"
-      echo " && useradd -u 2005 -g docker runuser"
-      echo "COPY --from=golden /etc/passwd /etc/passwd"
-      echo "COPY --from=golden /etc/shadow /etc/shadow"
-      echo "COPY --from=golden /etc/group /etc/group"
-    fi
-    echo "ARG LABEL_ONE"
-    echo "ARG LABEL_TWO"
-    echo "ARG LABEL_THREE"
-    echo "LABEL one=\"\${LABEL_ONE}\""
-    echo "LABEL two=\"\${LABEL_TWO}\""
-    echo "LABEL three=\"\${LABEL_THREE}\""
-    [[ "$image" == "synthetics-ping-runtime" ]] && echo "RUN chmod 755 /data/synthetics-ping-runtime/bin/control || true"
-    [[ "$image" == "synthetics-job-manager" ]] && echo "RUN chmod 755 /data/synthetics-job-manager/bin/control || true"
-    $needs_user_group && echo "USER runuser"
-  } > Dockerfile.generated
+  : > Dockerfile.generated
+
+  if $needs_user_group; then
+    # images that need golden + imported user/group
+    cat >> Dockerfile.generated <<'EOF'
+# syntax=docker/dockerfile:1.6
+ARG GOLDEN_BASE
+ARG BASE_IMAGE_REF
+ARG DOCKER_GID
+
+# golden stage (has groupadd/useradd)
+FROM ${GOLDEN_BASE} AS golden
+ARG DOCKER_GID
+RUN groupadd -g ${DOCKER_GID} docker \
+ && useradd -u 2005 -g docker -M -d /nonexistent -s /usr/sbin/nologin runuser
+
+# final stage (may be minimal, no groupadd available)
+FROM ${BASE_IMAGE_REF}
+USER root
+# import identities
+COPY --from=golden /etc/passwd /etc/passwd
+COPY --from=golden /etc/group  /etc/group
+COPY --from=golden /etc/shadow /etc/shadow
+EOF
+  else
+    # simple images (browser/api): keep base image's user; DO NOT set USER root
+    cat >> Dockerfile.generated <<'EOF'
+# syntax=docker/dockerfile:1.6
+ARG BASE_IMAGE_REF
+FROM ${BASE_IMAGE_REF}
+# (intentionally no USER directive; we keep whatever the base uses)
+EOF
+  fi
+
+  # labels (applies to all)
+  cat >> Dockerfile.generated <<'EOF'
+ARG LABEL_ONE
+ARG LABEL_TWO
+ARG LABEL_THREE
+LABEL one="${LABEL_ONE}"
+LABEL two="${LABEL_TWO}"
+LABEL three="${LABEL_THREE}"
+EOF
+
+  # per-image chmods (only where needed)
+  if [[ "$image" == "synthetics-ping-runtime" ]]; then
+    echo 'RUN chmod 755 /data/synthetics-ping-runtime/bin/control || true' >> Dockerfile.generated
+  elif [[ "$image" == "synthetics-job-manager" ]]; then
+    echo 'RUN chmod 755 /data/synthetics-job-manager/bin/control || true' >> Dockerfile.generated
+  fi
+
+  # drop to imported user only for those two images
+  $needs_user_group && echo 'USER runuser' >> Dockerfile.generated
 }
 
 send_sns() {
@@ -93,7 +141,8 @@ send_sns() {
 #####################################
 # MAIN
 #####################################
-DOCKER_GID=$(getent group docker | cut -d: -f3 || true)
+# Only needed for images that import docker group
+DOCKER_GID="$(getent group docker | cut -d: -f3 || true)"
 
 if [[ "$MODE" == "push" || "$MODE" == "build" ]]; then
   docker login "$ARTIFACTORY_REGISTRY" -u "$ARTIFACTORY_USER" -p "$ARTIFACTORY_PASSWORD"
@@ -103,41 +152,54 @@ built_list=()
 new_tags_found=()
 
 for img in "${IMAGES[@]}"; do
-  log "Checking new tags for $img..."
-  tags=$(get_new_tags "$img")
-  [[ -z "$tags" ]] && { log "No new tags for $img."; continue; }
-  for tag in $tags; do
-    target="${ARTIFACTORY_REGISTRY}/${ARTIFACTORY_NAMESPACE}/${img}:${tag}"
-    if check_in_registry "$target"; then
-      log "Already exists in registry: $target"
-      continue
-    fi
-    log "Found new tag: $img:$tag"
-    new_tags_found+=("$img:$tag")
+  log "Checking newest tag (last ${LOOKBACK_HOURS}h) for $img..."
+  tag="$(get_newest_tag "$img" || true)"
+  if [[ -z "${tag:-}" ]]; then
+    log "No qualifying tag for $img."
+    continue
+  fi
 
-    if [[ "$MODE" == "build" || "$MODE" == "push" ]]; then
-      log "Building $target..."
-      make_dockerfile "$img" "$tag"
-      docker build \
-        --pull \
-        -f Dockerfile.generated \
-        --build-arg GOLDEN_BASE="$GOLDEN_BASE" \
-        --build-arg BASE_IMAGE_REF="${DOCKERHUB_ORG}/${img}:${tag}" \
-        --build-arg DOCKER_GID="$DOCKER_GID" \
-        --build-arg LABEL_ONE="$LABEL_ONE" \
-        --build-arg LABEL_TWO="$LABEL_TWO" \
-        --build-arg LABEL_THREE="$LABEL_THREE" \
-        -t "$target" .
-      rm -f Dockerfile.generated
+  target="${ARTIFACTORY_REGISTRY}/${ARTIFACTORY_NAMESPACE}/${img}:${tag}"
+
+  if check_in_registry "$target"; then
+    log "Already exists in registry: $target"
+    continue
+  fi
+
+  log "Found new tag: $img:$tag"
+  new_tags_found+=("$img:$tag")
+
+  if [[ "$MODE" == "build" || "$MODE" == "push" ]]; then
+    log "Building $target..."
+    make_dockerfile "$img"
+
+    build_args=(
+      --pull
+      -f Dockerfile.generated
+      --build-arg BASE_IMAGE_REF="${DOCKERHUB_ORG}/${img}:${tag}"
+      --build-arg LABEL_ONE="$LABEL_ONE"
+      --build-arg LABEL_TWO="$LABEL_TWO"
+      --build-arg LABEL_THREE="$LABEL_THREE"
+      -t "$target" .
+    )
+
+    # only pass golden args when needed
+    if [[ "$img" =~ ^(synthetics-job-manager|synthetics-ping-runtime)$ ]]; then
+      : "${DOCKER_GID:?docker group not found on host}"   # fail fast if missing
+      build_args+=( --build-arg GOLDEN_BASE="$GOLDEN_BASE"
+                    --build-arg DOCKER_GID="$DOCKER_GID" )
     fi
 
-    if [[ "$MODE" == "push" ]]; then
-      log "Pushing $target..."
-      docker push "$target"
-    fi
+    DOCKER_BUILDKIT=1 docker build "${build_args[@]}"
+    rm -f Dockerfile.generated
+  fi
 
-    [[ "$MODE" != "check" ]] && built_list+=("$img:$tag")
-  done
+  if [[ "$MODE" == "push" ]]; then
+    log "Pushing $target..."
+    docker push "$target"
+  fi
+
+  [[ "$MODE" != "check" ]] && built_list+=("$img:$tag")
 done
 
 # Summary & SNS (only if new tags found)
@@ -145,7 +207,7 @@ if [[ ${#new_tags_found[@]} -eq 0 ]]; then
   log "No new tags found in the last ${LOOKBACK_HOURS} hours."
 else
   if [[ "$MODE" == "check" ]]; then
-    msg="New tags found: ${new_tags_found[*]}"
+    msg="Newest qualifying tags: ${new_tags_found[*]}"
   elif (( ${#built_list[@]} > 0 )); then
     msg="Built: ${built_list[*]}"
   else
@@ -154,47 +216,3 @@ else
   log "$msg"
   send_sns "Docker Build Status" "$msg"
 fi
-
-----
-
-make_dockerfile() {
-  local image="$1"
-  local file="Dockerfile.generated"
-
-  : > "$file"  # truncate
-
-  # Only these images need the golden stage + group/user
-  if [[ "$image" == "dasfda-safd" || "$image" == "sfds-sadds" ]]; then
-    {
-      echo "# syntax=docker/dockerfile:1.6"
-      echo "ARG GOLDEN_BASE"
-      echo "ARG DOCKER_GID"
-      echo "FROM \${GOLDEN_BASE} AS golden"
-      echo "RUN groupadd --gid \${DOCKER_GID} docker"
-      echo "RUN usermod -u 2005 runner"
-      echo "RUN usermod -aG docker runner"
-    } >> "$file"
-  fi
-
-  # Always have final stage FROM
-  echo "FROM \${BASE_IMAGE_REF}" >> "$file"
-
-  if [[ "$image" == "dasfda-safd" || "$image" == "sfds-sadds" ]]; then
-    {
-      echo "COPY --from=golden /etc/passwd /etc/passwd"
-      echo "COPY --from=golden /etc/shadow /etc/shadow"
-      echo "COPY --from=golden /etc/group /etc/group"
-      echo "USER root"
-    } >> "$file"
-
-    # chmod commands per image
-    if [[ "$image" == "dasfda-safd" ]]; then
-      echo "RUN chmod 755 /bin/sh || true" >> "$file"
-    elif [[ "$image" == "sfds-sadds" ]]; then
-      echo "RUN chmod 755 /bin/sh || true" >> "$file"
-    fi
-  fi
-
-  # Always append label
-  echo "LABEL ABC=DEF" >> "$file"
-}
