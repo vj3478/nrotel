@@ -1,0 +1,252 @@
+import os
+import json
+import time
+import logging
+from typing import Dict, Any, Optional, Tuple
+
+import boto3
+import requests
+from requests.auth import HTTPBasicAuth
+from botocore.exceptions import ClientError
+from aws_lambda_powertools import Tracer
+
+# ---------- Logging & Tracing ----------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+tracer = Tracer(service="jenkins-invoker")
+
+# ---------- AWS Clients ----------
+secrets = boto3.client("secretsmanager")
+sns = boto3.client("sns")
+
+# ---------- Environment ----------
+JENKINS_URL = os.environ["JENKINS_URL"].rstrip("/")                 # https://jenkins.example.com
+# JOB_PATH supports foldered jobs, e.g. "Folder/SubFolder/MyJob"
+JOB_PATH = os.environ["JOB_PATH"].strip("/")                         # e.g., "Folder/MyPipeline" or "MyPipeline"
+SECRET_NAME = os.environ["SECRET_NAME"]                              # e.g., jenkins/creds
+SNS_TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]                          # arn:aws:sns:region:acct:topic
+
+VERIFY_SSL = os.getenv("VERIFY_SSL", "true").lower() == "true"
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+BACKOFF_SECONDS = float(os.getenv("BACKOFF_SECONDS", "2.0"))
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10.0"))
+
+# ---------- Helpers ----------
+def _job_url(base: str, path: str) -> str:
+    # Translate "Folder/Sub/MyJob" to ".../job/Folder/job/Sub/job/MyJob"
+    parts = [p for p in path.split("/") if p]
+    segs = "/".join(f"job/{p}" for p in parts)
+    return f"{base}/{segs}"
+
+@tracer.capture_method
+def get_secret_pair(secret_name: str) -> Tuple[str, str]:
+    """Return (username, token) from Secrets Manager JSON."""
+    try:
+        resp = secrets.get_secret_value(SecretId=secret_name)
+        data = json.loads(resp["SecretString"])
+        return data["username"], data["token"]
+    except ClientError as e:
+        logger.error(f"SecretsManager error: {e}")
+        raise
+    except KeyError as e:
+        raise RuntimeError(f"Secret JSON missing key: {e}")
+
+@tracer.capture_method
+def get_crumb(session: requests.Session, auth: HTTPBasicAuth) -> Dict[str, str]:
+    """Fetch Jenkins crumb (CSRF token). Raises on failure."""
+    url = f"{JENKINS_URL}/crumbIssuer/api/json"
+    r = session.get(url, auth=auth, timeout=HTTP_TIMEOUT, verify=VERIFY_SSL)
+    if r.status_code != 200:
+        raise RuntimeError(f"Failed to get crumb (HTTP {r.status_code}): {r.text[:300]}")
+    data = r.json()
+    field = data.get("crumbRequestField", "Jenkins-Crumb")
+    crumb = data["crumb"]
+    logger.info("Crumb retrieved.")
+    return {field: crumb}
+
+@tracer.capture_method
+def trigger_build(session: requests.Session,
+                  auth: HTTPBasicAuth,
+                  crumb_hdr: Dict[str, str],
+                  params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Triggers Jenkins job; returns {ok, status_code, queue_location}.
+    Retries with exponential backoff.
+    """
+    base = _job_url(JENKINS_URL, JOB_PATH)
+    trigger_url = f"{base}/buildWithParameters" if params else f"{base}/build"
+    data = params or None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"POST {trigger_url} (attempt {attempt}/{MAX_RETRIES})")
+            resp = session.post(
+                trigger_url,
+                auth=auth,
+                headers=crumb_hdr,
+                data=data,
+                timeout=HTTP_TIMEOUT,
+                verify=VERIFY_SSL,
+                allow_redirects=False,
+            )
+
+            # Jenkins often returns 201 (Created) with Location header; 200/202/302 also seen
+            if resp.status_code in (200, 201, 202, 302):
+                location = resp.headers.get("Location")
+                logger.info(f"Triggered. HTTP {resp.status_code}; Location={location}")
+                return {"ok": True, "status_code": resp.status_code, "queue_location": location}
+
+            logger.warning(f"Unexpected status {resp.status_code}: {resp.text[:300]}")
+
+        except requests.RequestException as e:
+            logger.error(f"HTTP error: {e}")
+
+        if attempt < MAX_RETRIES:
+            sleep = BACKOFF_SECONDS * (2 ** (attempt - 1))
+            logger.info(f"Retrying after {sleep:.1f}s...")
+            time.sleep(sleep)
+
+    raise RuntimeError("Failed to trigger Jenkins job after retries.")
+
+@tracer.capture_method
+def publish_sns(subject: str, message_obj: Dict[str, Any]) -> None:
+    """Publish a JSON message to SNS."""
+    # SNS Subject limit is 100 chars; keep it short
+    subject = subject[:100]
+    msg = json.dumps(message_obj, separators=(",", ":"), default=str)
+    sns.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject, Message=msg)
+
+@tracer.capture_lambda_handler
+def lambda_handler(event, context):
+    """
+    Event (optional):
+    {
+      "parameters": { "BRANCH": "main", "IMAGE_TAG": "1.2.3" },
+      "metadata": { "source": "docker-tag-monitor" }   # any extra fields you want echoed to SNS
+    }
+    """
+    logger.info(f"Event: {json.dumps(event)}")
+    params = event.get("parameters") if isinstance(event, dict) else None
+    extra_meta = event.get("metadata") if isinstance(event, dict) else None
+
+    username, token = get_secret_pair(SECRET_NAME)
+    auth = HTTPBasicAuth(username, token)
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "aws-lambda-jenkins-invoker/3.0"})
+
+    # Always fetch crumb (your Jenkins requires it)
+    crumb_hdr = get_crumb(session, auth)
+
+    # Trigger Jenkins
+    trigger = trigger_build(session, auth, crumb_hdr, params)
+
+    # Publish SNS immediately after job is kicked off
+    payload = {
+        "jenkins_url": JENKINS_URL,
+        "job_path": JOB_PATH,
+        "status": "TRIGGERED" if trigger["ok"] else "FAILED_TO_TRIGGER",
+        "http_status": trigger["status_code"],
+        "queue_location": trigger.get("queue_location"),
+        "parameters": params or {},
+        "timestamp": int(time.time()),
+    }
+    if extra_meta:
+        payload["metadata"] = extra_meta
+
+    subject = f"Jenkins job {JOB_PATH} triggered" if trigger["ok"] else f"Jenkins job {JOB_PATH} trigger FAILED"
+    publish_sns(subject, payload)
+
+    # Return the same info to caller
+    return {
+        "ok": trigger["ok"],
+        "status_code": trigger["status_code"],
+        "queue_location": trigger.get("queue_location"),
+        "message_published": True
+    }
+
+
+-----
+requirements.txt
+
+boto3
+requests
+aws-lambda-powertools
+
+
+----
+
+env variables
+
+
+Key
+Example
+JENKINS_URL
+https://jenkins.example.com
+JOB_PATH
+Folder/SubFolder/MyPipeline or MyPipeline
+SECRET_NAME
+jenkins/creds
+SNS_TOPIC_ARN
+arn:aws:sns:us-east-1:123456789012:jenkins-events
+VERIFY_SSL
+true
+MAX_RETRIES
+3
+BACKOFF_SECONDS
+2.0
+HTTP_TIMEOUT
+10.0
+
+
+----
+
+policy
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadJenkinsSecret",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:jenkins/*"
+    },
+    {
+      "Sid": "Logs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PublishToSNS",
+      "Effect": "Allow",
+      "Action": ["sns:Publish"],
+      "Resource": "arn:aws:sns:REGION:ACCOUNT_ID:jenkins-events"
+    }
+  ]
+}
+
+-----
+
+example 
+
+{
+  "parameters": {
+    "BRANCH": "main",
+    "IMAGE_TAG": "1.9.0"
+  },
+  "metadata": {
+    "source": "docker-tag-monitor",
+    "request_id": "abcd-1234"
+  }
+}
+
+----
+
+
+
+
+
+
+
