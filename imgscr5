@@ -1,0 +1,537 @@
+python update_images.py --dry-run
+
+python update_images.py
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Daily container image updater (local mode).
+
+What it does (once per day):
+  1) For each configured image, query Docker Hub for the newest non-'latest' tag
+     that was updated in the last 24 hours.
+  2) For any image with a new tag:
+       - Build a new image using a generated Dockerfile
+         (adds a “golden” stage only for job-manager & ping-runtime),
+       - Push it to Artifactory.
+  3) Clone the GitHub repo, create a branch, update ONE YAML file via regex
+     search/replace of image:tag references, commit, push, and open a PR.
+  4) Log everything to CloudWatch Logs.
+  5) On any failure (real run), publish an SNS alert and exit non-zero.
+
+Dry-run mode:
+  - Prints/logs every planned action
+  - Makes NO changes (no docker login/build/push, no file writes, no PR)
+  - Logs failures but does not exit
+
+Requirements:
+  - Python 3
+  - git & docker CLIs installed and on PATH
+  - pip install boto3 requests
+  - IAM permissions for CloudWatch Logs, Secrets Manager (2 secrets), SNS publish
+"""
+
+import argparse
+import datetime as dt
+import grp
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Dict, Optional, Tuple, List
+
+import boto3
+import requests
+
+
+# =========================
+# CONFIGURATION (edit inline or override a few flags)
+# =========================
+CFG = {
+    # GitHub repo & PR
+    "repo_url": "https://github.com/your-org/your-repo.git",
+    "repo_file_path": "path/to/file.yaml",    # The single file to update
+    "base_branch": "master",
+    "branch_prefix": "chore/update-images",
+    "pr_title": "chore: update container image versions",
+    "pr_body_suffix": "\n\nAutomated update.",
+
+    # AWS (region, secrets, SNS)
+    "aws_region": os.getenv("AWS_REGION", "us-east-1"),
+    "sns_topic_arn": "arn:aws:sns:us-east-1:123456789012:notify-repo-pr",
+    "secret_github": "prod/github/pat",             # Secrets Manager name (GitHub token)
+    "secret_artifactory": "prod/artifactory/token", # Secrets Manager name (Artifactory token)
+
+    # CloudWatch logging
+    "cw_group": "/app/update-images",
+    "cw_enabled": True,
+
+    # Docker / registry
+    "artifactory": "artifactory.localrepo.com",
+    "artifactory_user": "your_artifactory_username",
+    "base_image": "artifactory.localrepo.baseimage:latest",
+    "workdir": "./docker-builds",
+
+    # Images to check
+    "images": [
+        "newrelic/synthetics-job-manager",
+        "newrelic/synthetics-node-api-runtime",
+        "newrelic/synthetics-node-browser-runtime",
+        "newrelic/synthetics-ping-runtime",
+    ],
+
+    # Policy: look back 24h (script intended to run daily)
+    "lookback_hours": 24,
+
+    # HTTP calls (timeouts, minimal retries)
+    "http_timeout": (5, 30),   # (connect, read) seconds
+    "http_retries": 3,
+    "http_backoff": 1.5,       # exponential backoff base (no jitter for simplicity)
+    "hub_page_size": 100,      # single page; good enough for daily check
+}
+
+
+# =========================
+# CloudWatch logging helper (tiny)
+# =========================
+class CW:
+    """Minimal CloudWatch logger that also prints to stdout."""
+    def __init__(self, enabled: bool, group: str, region: str):
+        self.enabled = enabled
+        self.group = group
+        self.client = boto3.client("logs", region_name=region) if enabled else None
+        self.stream = f"run-{dt.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        self.seq = None
+        if enabled:
+            try:
+                self.client.create_log_group(logGroupName=group)
+            except self.client.exceptions.ResourceAlreadyExistsException:
+                pass
+            try:
+                self.client.create_log_stream(logGroupName=group, logStreamName=self.stream)
+            except self.client.exceptions.ResourceAlreadyExistsException:
+                self._refresh()
+
+    def _refresh(self):
+        r = self.client.describe_log_streams(
+            logGroupName=self.group,
+            logStreamNamePrefix=self.stream,
+            limit=1
+        )
+        s = r.get("logStreams", [])
+        if s:
+            self.seq = s[0].get("uploadSequenceToken")
+
+    def log(self, msg: str):
+        print(msg)
+        if not self.enabled:
+            return
+        e = {"timestamp": int(time.time() * 1000), "message": msg}
+        args = dict(logGroupName=self.group, logStreamName=self.stream, logEvents=[e])
+        if self.seq:
+            args["sequenceToken"] = self.seq
+        try:
+            r = self.client.put_log_events(**args)
+            self.seq = r.get("nextSequenceToken", self.seq)
+        except self.client.exceptions.InvalidSequenceTokenException:
+            self._refresh()
+            args["sequenceToken"] = self.seq
+            r = self.client.put_log_events(**args)
+            self.seq = r.get("nextSequenceToken", self.seq)
+        except Exception as ex:
+            print(f"[CW warn] {ex}")
+
+
+# =========================
+# Utilities (shell, AWS, HTTP, text replace)
+# =========================
+def sh(cmd: List[str], cwd: Optional[Path] = None, check=True, input_: Optional[str] = None, log: Optional[CW] = None):
+    """Run a shell command and stream logs."""
+    if log:
+        log.log("$ " + " ".join(cmd))
+    return subprocess.run(cmd, cwd=cwd, text=True, input=input_, check=check)
+
+def send_sns(topic_arn: str, subject: str, message: str, region: str, log: CW):
+    """Publish an SNS notification."""
+    boto3.client("sns", region_name=region).publish(TopicArn=topic_arn, Subject=subject, Message=message)
+    log.log(f"[SNS] {subject}\n{message}")
+
+def get_secret(name: str, region: str) -> str:
+    """Get a Secrets Manager value (string or binary)."""
+    sm = boto3.client("secretsmanager", region_name=region)
+    r = sm.get_secret_value(SecretId=name)
+    if "SecretString" in r:
+        return r["SecretString"]
+    import base64
+    return base64.b64decode(r["SecretBinary"]).decode()
+
+def extract_token(secret_str: str, keys=("token","github_token","password","ARTIFACTORY_TOKEN","GITHUB_TOKEN")) -> str:
+    """Try JSON keys; fall back to treating the secret as the token string."""
+    try:
+        o = json.loads(secret_str)
+        for k in keys:
+            if isinstance(o.get(k), str):
+                return o[k]
+    except json.JSONDecodeError:
+        pass
+    return secret_str
+
+def http_get_json_retry(url: str, timeout: Tuple[int,int], retries: int, backoff: float, log: CW):
+    """HTTP GET → JSON with simple exponential backoff."""
+    last = None
+    for i in range(1, retries+1):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last = e
+            log.log(f"[HTTP GET {i}/{retries}] {url} -> {e}")
+            if i < retries:
+                time.sleep(backoff * (2 ** (i-1)))
+    raise last
+
+def dockerhub_latest_in_last_24h(image: str, cfg: dict, log: CW) -> Optional[Tuple[str, dt.datetime]]:
+    """
+    Query Docker Hub for newest non-'latest' tag on a single page (page_size=100).
+    Return (tag, updated_at) only if updated within cfg['lookback_hours'].
+    """
+    url = f"https://hub.docker.com/v2/repositories/{image}/tags?page_size={cfg['hub_page_size']}"
+    data = http_get_json_retry(url, cfg["http_timeout"], cfg["http_retries"], cfg["http_backoff"], log)
+    newest = None
+    for it in data.get("results", []):
+        name = it.get("name")
+        if not name or name == "latest":
+            continue
+        lu = it.get("last_updated")
+        if not lu:
+            continue
+        if lu.endswith("Z"):
+            lu = lu[:-1] + "+00:00"
+        try:
+            t = dt.datetime.fromisoformat(lu)
+        except Exception:
+            continue
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=dt.timezone.utc)
+        if (newest is None) or (t > newest[1]):
+            newest = (name, t)
+    if newest and newest[1] >= (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=cfg["lookback_hours"])):
+        return newest
+    return None
+
+def docker_gid() -> Optional[int]:
+    """Return host Docker group GID (needed for the golden stage images)."""
+    try:
+        return grp.getgrnam("docker").gr_gid
+    except KeyError:
+        return None
+
+def write_dockerfile(path: Path, cfg: dict, image: str, tag: str, gid: Optional[int]):
+    """
+    Generate a Dockerfile in workdir:
+      - For 'job-manager' and 'ping-runtime': add a 'golden' stage to create 'runuser'
+        and copy passwd/group files; requires host Docker GID.
+      - For other images: minimal Dockerfile FROM the Artifactory mirror.
+    """
+    image_name = image.split("/")[-1]
+    needs_golden = ("job-manager" in image_name) or ("ping-runtime" in image_name)
+
+    if needs_golden:
+        if gid is None:
+            # In real runs we should never get here (we check earlier); this protects against misuse.
+            raise RuntimeError("Docker GID not found for golden stage")
+        content = f"""# syntax=docker/dockerfile:1
+FROM {cfg['base_image']} as golden
+USER root
+RUN groupadd -g {gid} docker && groupadd -g 12345 runusergrp \\
+    && useradd -u 1000 -g 12345 -m -s /bin/bash runuser \\
+    && usermod -aG docker runuser
+
+FROM {cfg['artifactory']}/{image}:{tag}
+USER root
+COPY --from=golden /etc/passwd /etc/passwd
+COPY --from=golden /etc/shadow /etc/shadow
+COPY --from=golden /etc/group /etc/group
+"""
+        if "job-manager" in image_name:
+            content += "RUN chmod 777 /data/synthetics-job-manager/bin/control\nUSER runuser\n"
+        elif "ping-runtime" in image_name:
+            content += "RUN chmod 755 /data/synthetics-ping-runtime/bin/control\nUSER runuser\n"
+    else:
+        content = f"""# syntax=docker/dockerfile:1
+FROM {cfg['artifactory']}/{image}:{tag}
+USER root
+"""
+    path.write_text(content)
+
+def regex_update_yaml_file(file_path: Path, updates: Dict[str, str]) -> Tuple[bool, Dict[str, Tuple[str, str]]]:
+    """
+    Blind regex replacement across the YAML file:
+      any 'repo/name:old' becomes 'repo/name:new' for known repos (updates dict).
+    Returns: (changed?, {image: (old_tag, new_tag)})
+    """
+    text = file_path.read_text()
+    orig = text
+    changes: Dict[str, Tuple[str, str]] = {}
+
+    for image, new_tag in updates.items():
+        # Match "<image>:<tag>" where <tag> has no whitespace or quotes
+        pattern = rf"({re.escape(image)}):([^\s\"']+)"
+        def repl(m):
+            old = m.group(2)
+            if image not in changes and old != new_tag:
+                changes[image] = (old, new_tag)
+            return f"{m.group(1)}:{new_tag}"
+        text, _ = re.subn(pattern, repl, text)
+
+    if text != orig:
+        file_path.write_text(text)
+        return True, changes
+    return False, changes
+
+
+# =========================
+# MAIN FLOW
+# =========================
+def main():
+    # ---- CLI (only a couple of overrides to keep it simple) ----
+    ap = argparse.ArgumentParser(description="Daily image updater (24h lookback, local mode).")
+    ap.add_argument("--dry-run", action="store_true", help="Preview actions; do not change anything")
+    ap.add_argument("--repo-url")
+    ap.add_argument("--file-path")
+    ap.add_argument("--base-branch")
+    args = ap.parse_args()
+
+    # Apply light overrides to CFG
+    if args.repo_url:  CFG["repo_url"] = args.repo_url
+    if args.file_path: CFG["repo_file_path"] = args.file_path
+    if args.base_branch: CFG["base_branch"] = args.base_branch
+
+    # Initialize CloudWatch logger
+    log = CW(CFG["cw_enabled"], CFG["cw_group"], CFG["aws_region"])
+    dry = bool(args.dry_run)
+
+    # ---- Preflight: required external commands ----
+    for cmd in ("git", "docker"):
+        if shutil.which(cmd) is None:
+            msg = f"Required command not found on PATH: {cmd}"
+            log.log("❌ " + msg)
+            if not dry:
+                send_sns(CFG["sns_topic_arn"], f"Failure: Missing {cmd}", msg, CFG["aws_region"], log)
+                sys.exit(1)
+            else:
+                log.log("[Dry-run] Continuing anyway.")
+
+    # ---- Retrieve secrets (GitHub & Artifactory) ----
+    try:
+        gh_raw = get_secret(CFG["secret_github"], CFG["aws_region"])
+        art_raw = get_secret(CFG["secret_artifactory"], CFG["aws_region"])
+        github_token = extract_token(gh_raw, ("token", "github_token", "GITHUB_TOKEN"))
+        artifactory_token = extract_token(art_raw, ("token", "password", "ARTIFACTORY_TOKEN"))
+    except Exception as e:
+        log.log(f"❌ Get secrets: {e}")
+        if not dry:
+            send_sns(CFG["sns_topic_arn"], "Failure: Get Secrets", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+        else:
+            # In dry-run we just set placeholders so subsequent steps can log planned actions
+            github_token = "DRY"
+            artifactory_token = "DRY"
+            log.log("[Dry-run] Using placeholder tokens.")
+
+    # ---- Determine Docker GID (required for golden stage images) ----
+    gid = docker_gid()
+    if gid is None:
+        msg = "Host 'docker' group not found (Docker GID missing)."
+        log.log("❌ " + msg)
+        if not dry:
+            # Requirement: real run must fail and notify if GID is missing
+            send_sns(CFG["sns_topic_arn"], "Failure: Docker GID", msg, CFG["aws_region"], log)
+            sys.exit(1)
+        else:
+            log.log("[Dry-run] Will generate golden-stage Dockerfiles WITHOUT docker group lines (simulated).")
+
+    # ---- Docker login (skip in dry-run) ----
+    workdir = Path(CFG["workdir"])
+    workdir.mkdir(parents=True, exist_ok=True)
+    if dry:
+        log.log(f"[Dry-run] Would 'docker login' to {CFG['artifactory']} as {CFG['artifactory_user']}")
+    else:
+        try:
+            sh(
+                ["docker", "login", CFG["artifactory"], "--username", CFG["artifactory_user"], "--password-stdin"],
+                input_=artifactory_token,
+                log=log
+            )
+        except Exception as e:
+            log.log(f"❌ Docker login: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Docker Login", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+    # ---- 24-hour lookback check on Docker Hub, then build/push ----
+    updates: Dict[str, str] = {}  # image -> new_tag
+    lookback_h = int(CFG["lookback_hours"])
+
+    for image in CFG["images"]:
+        log.log(f"\n🔍 Checking {image} (last {lookback_h}h)...")
+        try:
+            latest = dockerhub_latest_in_last_24h(image, CFG, log)
+        except Exception as e:
+            log.log(f"❌ Docker Hub query: {e}")
+            if not dry:
+                send_sns(CFG["sns_topic_arn"], f"Failure: Hub Query {image}", str(e), CFG["aws_region"], log)
+                sys.exit(1)
+            else:
+                # continue to next image in dry-run
+                continue
+
+        if not latest:
+            log.log("⏩ No new tag in last 24h; skip.")
+            continue
+
+        tag, updated_at = latest
+        image_name = image.split("/")[-1]
+        dockerfile = workdir / f"Dockerfile.{image_name}"
+        target_tag = f"{CFG['artifactory']}/newrelic/{image_name}:{tag}"
+
+        log.log(f"✅ New tag: {tag} (updated {updated_at.isoformat()})")
+
+        if dry:
+            log.log(f"[Dry-run] Would write {dockerfile}")
+            log.log(f"[Dry-run] Would docker build & push {target_tag}")
+        else:
+            try:
+                write_dockerfile(dockerfile, CFG, image, tag, gid)
+                sh(["docker", "build", "-t", target_tag, "-f", str(dockerfile), str(workdir)], log=log)
+                sh(["docker", "push", target_tag], log=log)
+            except Exception as e:
+                log.log(f"❌ Build/Push {image_name}: {e}")
+                send_sns(CFG["sns_topic_arn"], f"Failure: Build/Push {image_name}", str(e), CFG["aws_region"], log)
+                sys.exit(1)
+
+        # Track for YAML replacement later
+        updates[image] = tag
+
+    # If nothing was updated in 24h, we exit cleanly
+    if not updates:
+        log.log("\nℹ️ No images updated in last 24h; nothing to do.")
+        return
+
+    # ---- Git/PR: clone → branch → update the YAML → commit → push → PR ----
+    if dry:
+        log.log("\n[Dry-run] Would create branch, update YAML, commit, push, and open PR.")
+        for img, tag in updates.items():
+            log.log(f" - {img} -> {tag}")
+        log.log(f"[Dry-run] Target file: {CFG['repo_file_path']}")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="repo-"))
+    try:
+        repo_dir = tmp / "repo"
+
+        # Clone fresh copy of the base branch
+        try:
+            sh(["git", "clone", "--branch", CFG["base_branch"], "--single-branch", CFG["repo_url"], str(repo_dir)], log=log)
+        except Exception as e:
+            log.log(f"❌ Git clone: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Git Clone", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+        # Simple bot identity
+        try:
+            sh(["git", "config", "user.name", "auto-updater"], cwd=repo_dir, log=log)
+            sh(["git", "config", "user.email", "auto@example.com"], cwd=repo_dir, log=log)
+        except Exception as e:
+            log.log(f"❌ Git config: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Git Config", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+        # Create a unique branch
+        branch = f"{CFG['branch_prefix']}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        try:
+            sh(["git", "checkout", "-b", branch], cwd=repo_dir, log=log)
+        except Exception as e:
+            log.log(f"❌ Git branch: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Git Branch", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+        # Update the single YAML file via regex-based replace
+        target_file = repo_dir / CFG["repo_file_path"]
+        if not target_file.exists():
+            msg = f"Target file not found: {target_file}"
+            log.log("❌ " + msg)
+            send_sns(CFG["sns_topic_arn"], "Failure: Missing File", msg, CFG["aws_region"], log)
+            sys.exit(1)
+
+        try:
+            changed, change_map = regex_update_yaml_file(target_file, updates)
+            if not changed:
+                # The images existed but the file did not reference them; nothing to commit/PR
+                log.log("ℹ️ No matching image references found in YAML; skipping PR.")
+                return
+            sh(["git", "add", "-A"], cwd=repo_dir, log=log)
+            msg_lines = ["chore: bump image tags (last 24h)", ""]
+            for img, (old, new) in change_map.items():
+                msg_lines.append(f"- {img}: {old} -> {new}")
+            commit_msg = "\n".join(msg_lines)
+            sh(["git", "commit", "-m", commit_msg], cwd=repo_dir, log=log)
+        except Exception as e:
+            log.log(f"❌ Git commit/update: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Commit", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+        # Push the branch (auth via token in remote URL)
+        try:
+            m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", CFG["repo_url"])
+            if not m:
+                raise RuntimeError("Cannot parse owner/repo from CFG['repo_url']")
+            owner, repo = m.group(1), m.group(2)
+            remote = f"https://x-access-token:{github_token}@github.com/{owner}/{repo}.git"
+            sh(["git", "push", remote, f"HEAD:refs/heads/{branch}"], cwd=repo_dir, log=log)
+        except Exception as e:
+            log.log(f"❌ Git push: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Push", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+        # Open a Pull Request
+        try:
+            url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+            headers = {"Authorization": f"Bearer {github_token}", "Accept": "application/vnd.github+json"}
+            body = commit_msg + CFG["pr_body_suffix"]
+            r = requests.post(
+                url,
+                headers=headers,
+                json={"title": CFG["pr_title"], "body": body, "head": branch, "base": CFG["base_branch"]},
+                timeout=CFG["http_timeout"],
+            )
+            r.raise_for_status()
+            pr_url = r.json().get("html_url", "<unknown>")
+            send_sns(
+                CFG["sns_topic_arn"],
+                "New PR opened: container image updates",
+                f"PR: {pr_url}\nBranch: {branch}\nBase: {CFG['base_branch']}",
+                CFG["aws_region"],
+                log,
+            )
+            log.log(f"✅ Done. PR: {pr_url}")
+        except Exception as e:
+            log.log(f"❌ Open PR: {e}")
+            send_sns(CFG["sns_topic_arn"], "Failure: Open PR", str(e), CFG["aws_region"], log)
+            sys.exit(1)
+
+    finally:
+        # Always clean up the temp repo folder
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    # Unbuffered output helps real-time log shipping
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    main()
