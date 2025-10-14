@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Compare Kubernetes metrics reported by:
+  • New Relic Kubernetes agent (instrumentation.provider ~ 'newrelic-infrastructure')
+  • OpenTelemetry (instrumentation.provider ~ 'opentelemetry')
+
+Outputs (in ./out):
+  - nr_metrics.csv, otel_metrics.csv         (metric names)
+  - nr_attrs.csv,   otel_attrs.csv           (per-metric attribute keys)
+  - comparison_summary.csv                   (missing/attribute diffs)
+"""
+
+import os, time, json, csv, requests
+from typing import Dict, List, Set, Optional
+
+# ---------------------------------------------------------------------
+# USER CONFIGURATION (fill these in)
+# ---------------------------------------------------------------------
+NEW_RELIC_API_KEY   = "NRII-XXXXXXXXXXXXXXXXXXXXXXXXXXXX"   # 🔒 Your NerdGraph User API key
+NEW_RELIC_ACCOUNT_ID = "1234567"                            # 🔢 Your New Relic Account ID
+
+NR_CLUSTER_NAME  = "prod-cluster"   # Both can be same if shared cluster
+OTEL_CLUSTER_NAME = "prod-cluster"
+
+SINCE_MINUTES = 120   # How far back to look (e.g., 120 = 2 hours)
+OUT_DIR = "out"       # Output folder
+
+# Fallback provider identifiers
+FALLBACK_NR_PROVIDER   = "newrelic-infrastructure"
+FALLBACK_OTEL_PROVIDER = "opentelemetry"
+# ---------------------------------------------------------------------
+
+GRAPHQL_URL = "https://api.newrelic.com/graphql"
+HEADERS     = {"Content-Type": "application/json", "API-Key": NEW_RELIC_API_KEY}
+
+NRQL_GQL = """
+query Q($accountId: Int!, $nrql: Nrql!) {
+  actor { account(id: $accountId) { nrql(query: $nrql) { results nextCursor } } }
+}
+"""
+
+# ------------------ helpers ------------------
+def run_nrql(account_id: int, nrql: str, cursor: Optional[str] = None):
+    if cursor:
+        nrql = f"{nrql} WITH CURSOR '{cursor}'"
+    payload = {"query": NRQL_GQL, "variables": {"accountId": int(account_id), "nrql": nrql}}
+    r = requests.post(GRAPHQL_URL, headers=HEADERS, data=json.dumps(payload), timeout=45)
+    r.raise_for_status()
+    data = r.json()
+    if "errors" in data:
+        raise RuntimeError(data["errors"])
+    block = data["data"]["actor"]["account"]["nrql"]
+    return block.get("results", []) or [], block.get("nextCursor")
+
+def run_all_pages(account_id: int, nrql: str) -> List[dict]:
+    rows, cursor = [], None
+    while True:
+        batch, cursor = run_nrql(account_id, nrql, cursor)
+        rows += batch
+        if not cursor:
+            break
+        time.sleep(0.25)
+    return rows
+
+def detect_provider_values(cluster_name: str) -> Set[str]:
+    filters = [f"`k8s.cluster.name` = '{cluster_name}'", f"`clusterName` = '{cluster_name}'"]
+    providers = set()
+    for cf in filters:
+        nrql = f"SELECT uniques(`instrumentation.provider`) FROM Metric WHERE {cf} SINCE {SINCE_MINUTES} minutes ago LIMIT MAX"
+        res, _ = run_nrql(int(NEW_RELIC_ACCOUNT_ID), nrql)
+        for k, v in (res[0] if res else {}).items():
+            if isinstance(v, list):
+                providers |= set(v)
+    return providers
+
+def metrics_by_filter(extra_filter: str) -> Set[str]:
+    nrql = f"SELECT count(*) FROM Metric WHERE {extra_filter} SINCE {SINCE_MINUTES} minutes ago FACET metricName LIMIT MAX"
+    rows = run_all_pages(int(NEW_RELIC_ACCOUNT_ID), nrql)
+    return {r.get('facet')[0] if isinstance(r.get('facet'), list) else r.get('facet') for r in rows if r.get('facet')}
+
+def attr_keys_by_filter(extra_filter: str) -> Dict[str, Set[str]]:
+    nrql = f"SELECT keyset() FROM Metric WHERE {extra_filter} SINCE {SINCE_MINUTES} minutes ago FACET metricName LIMIT MAX"
+    rows = run_all_pages(int(NEW_RELIC_ACCOUNT_ID), nrql)
+    out = {}
+    for r in rows:
+        metric = r.get('facet')
+        if isinstance(metric, list): metric = metric[0]
+        if not metric: continue
+        keys = set()
+        for k, v in r.items():
+            if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                keys |= set(v)
+        out[str(metric)] = keys
+    return out
+
+def write_csv(path: str, rows: Set[str], header="metricName"):
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, path), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f); w.writerow([header])
+        for r in sorted(rows): w.writerow([r])
+
+def write_attr_csv(path: str, mapping: Dict[str, Set[str]]):
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, path), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f); w.writerow(["metricName", "attributeKey"])
+        for m, keys in mapping.items():
+            if keys:
+                for k in sorted(keys): w.writerow([m, k])
+            else:
+                w.writerow([m, ""])
+
+def write_summary(path: str, missing_in_nr, missing_in_otel, attr_diff):
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, path), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f); w.writerow(["section", "metricName"])
+        for m in sorted(missing_in_nr):  w.writerow(["missing_in_nr_cluster", m])
+        for m in sorted(missing_in_otel): w.writerow(["missing_in_otel_cluster", m])
+        for m in sorted(attr_diff):      w.writerow(["attribute_diff", m])
+
+# ------------------ main ------------------
+def main():
+    if not NEW_RELIC_API_KEY or not NEW_RELIC_ACCOUNT_ID:
+        raise SystemExit("❌ Please fill in NEW_RELIC_API_KEY and NEW_RELIC_ACCOUNT_ID.")
+
+    print(f"\n[INFO] Comparing metrics for clusters '{NR_CLUSTER_NAME}' vs '{OTEL_CLUSTER_NAME}'")
+
+    print("\nDetecting available instrumentation.provider values…")
+    all_providers = detect_provider_values(NR_CLUSTER_NAME) | detect_provider_values(OTEL_CLUSTER_NAME)
+    print(f"   Found providers: {sorted(all_providers)}")
+
+    nr_provider   = next((p for p in all_providers if "newrelic" in p.lower()), FALLBACK_NR_PROVIDER)
+    otel_provider = next((p for p in all_providers if "opentelemetry" in p.lower()), FALLBACK_OTEL_PROVIDER)
+    print(f"   → Using NR provider   = {nr_provider}")
+    print(f"   → Using OTEL provider = {otel_provider}")
+
+    nr_filter = f"`instrumentation.provider` = '{nr_provider}'"
+    otel_filter = f"`instrumentation.provider` = '{otel_provider}'"
+
+    # Optionally include cluster name filter if same cluster hosts both
+    nr_filter += f" AND (`k8s.cluster.name` = '{NR_CLUSTER_NAME}' OR `clusterName` = '{NR_CLUSTER_NAME}')"
+    otel_filter += f" AND (`k8s.cluster.name` = '{OTEL_CLUSTER_NAME}' OR `clusterName` = '{OTEL_CLUSTER_NAME}')"
+
+    print("\nFetching metrics from New Relic agent…")
+    nr_metrics = metrics_by_filter(nr_filter)
+    write_csv("nr_metrics.csv", nr_metrics)
+
+    print("Fetching metrics from OpenTelemetry agent…")
+    otel_metrics = metrics_by_filter(otel_filter)
+    write_csv("otel_metrics.csv", otel_metrics)
+
+    print("\nFetching attribute keysets…")
+    nr_attrs   = attr_keys_by_filter(nr_filter)
+    otel_attrs = attr_keys_by_filter(otel_filter)
+    write_attr_csv("nr_attrs.csv", nr_attrs)
+    write_attr_csv("otel_attrs.csv", otel_attrs)
+
+    print("\nComparing results…")
+    missing_in_nr   = otel_metrics - nr_metrics
+    missing_in_otel = nr_metrics - otel_metrics
+    attr_diff = {m for m in nr_metrics & otel_metrics if nr_attrs.get(m, set()) != otel_attrs.get(m, set())}
+
+    write_summary("comparison_summary.csv", missing_in_nr, missing_in_otel, attr_diff)
+
+    print("\n✅ Done!  Check the ./out folder for:")
+    print("   nr_metrics.csv, otel_metrics.csv, nr_attrs.csv, otel_attrs.csv, comparison_summary.csv")
+
+if __name__ == "__main__":
+    main()
