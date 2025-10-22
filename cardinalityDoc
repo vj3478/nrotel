@@ -1,0 +1,309 @@
+Excellent — here’s a Confluence-ready document written in Atlassian style (with headings, tables, code blocks, and visual explanation) on
+
+Event, Metric, and Dimensional Cardinality in New Relic — with OpenTelemetry + Kubernetes examples
+
+It’s designed to be copy-pasted directly into Confluence, preserving formatting, hierarchy, and inline code styling.
+I’ve expanded the dimensional cardinality section with additional OpenTelemetry + Kubernetes optimization examples (labels, pipelines, processors).
+
+⸻
+
+🧭 Understanding Event, Metric, and Dimensional Cardinality in New Relic (Using OpenTelemetry Kubernetes)
+
+⸻
+
+🧩 1. Event Data
+
+🔹 Definition
+
+Events in New Relic are discrete, timestamped occurrences that represent something that happened once — e.g., a pod restarted, a deployment scaled, or a request span completed.
+They are stored as individual rows (immutable) in event tables like Span, Log, or K8sEvent.
+
+Events are high-granularity and best for debugging, tracing, and auditing.
+
+⸻
+
+🔹 Example 1 – Kubernetes Pod Creation Event
+
+Emitted via the OpenTelemetry k8sobjectsreceiver:
+
+{
+  "event.reason": "Created",
+  "event.type": "Normal",
+  "k8s.namespace.name": "checkout",
+  "k8s.pod.name": "checkout-api-56f7d5b99c-2jzdp",
+  "message": "Created container checkout-api",
+  "timestamp": 1731888000
+}
+
+NRQL Query
+
+FROM K8sEvent 
+SELECT latest(message) 
+WHERE event.reason = 'Created' 
+  AND k8s.namespace.name = 'checkout'
+
+
+⸻
+
+🔹 Example 2 – Span Event for a Checkout Request
+
+FROM Span 
+SELECT average(duration) 
+WHERE service.name = 'checkout-service' 
+  AND k8s.namespace.name = 'prod' 
+SINCE 30 minutes ago
+
+→ Analyzes average latency per request span inside your Kubernetes service.
+
+⸻
+
+✅ Best For
+	•	Tracing distributed requests
+	•	Debugging pod-level failures
+	•	Visualizing log or event timelines
+
+⸻
+
+📈 2. Metric Data
+
+🔹 Definition
+
+Metrics are aggregated numerical measurements collected at intervals — typically via the OpenTelemetry receivers such as
+kubeletstatsreceiver, k8sclusterreceiver, or k8sobjectsreceiver.
+They summarize data over time rather than capturing each occurrence.
+
+Metrics appear in the Metric table (generic) or specialized sample tables like K8sContainerSample, K8sPodSample, SystemSample.
+
+⸻
+
+🔹 Example 1 – Container CPU Usage Metric
+
+Collected by kubeletstatsreceiver:
+
+FROM Metric 
+SELECT average(k8s.container.cpu.usageCores) 
+WHERE k8s.pod.name = 'checkout-api-56f7d5b99c-2jzdp' 
+TIMESERIES 1 minute
+
+Equivalent OpenTelemetry metric:
+
+Name: k8s.container.cpu.usageCores
+Type: Gauge
+Attributes: {cluster="prod-cluster", namespace="checkout", container="checkout-api"}
+
+
+⸻
+
+🔹 Example 2 – Node Memory Utilization
+
+FROM Metric 
+SELECT average(k8s.node.memory.usagePercent) 
+WHERE k8s.node.name LIKE 'ip-10-0-%' 
+TIMESERIES
+
+
+⸻
+
+🔹 Example 3 – Pod Restart Count
+
+FROM Metric 
+SELECT max(k8s.pod.restart.count) 
+WHERE k8s.namespace.name = 'checkout' 
+FACET k8s.pod.name 
+SINCE 1 hour ago
+
+
+⸻
+
+✅ Best For
+	•	Dashboards & performance trends
+	•	Alert conditions
+	•	Cluster health and capacity planning
+
+⸻
+
+🔢 3. Dimensional Cardinality (Metric Cardinality)
+
+🔹 Definition
+
+Dimensional Cardinality is the count of unique metric time series (MTS) produced by the combination of a metric name and its dimensions (labels / attributes).
+
+Each unique tuple of
+metric name + attribute values = 1 time series.
+In Kubernetes this may include cluster, namespace, pod, container, node, region, etc.
+
+Excessive dimensions (especially dynamic ones like pod_uid) create a cardinality explosion that increases cost, ingestion volume, and query latency.
+
+⸻
+
+🔹 Example 1 – High Cardinality (Non-Optimized)
+
+Metric name: k8s.container.cpu.usageCores
+Attributes:
+  cluster = "prod-cluster"
+  namespace = "checkout"
+  pod = "checkout-api-56f7d5b99c-2jzdp"
+  container_id = "docker://8af4e"
+
+Every new container_id creates a new MTS.
+A 100-pod deployment may generate hundreds of unique series for a single metric.
+
+⸻
+
+🔹 Example 2 – Optimized Cardinality
+
+Metric name: k8s.container.cpu.usageCores
+Attributes:
+  cluster = "prod-cluster"
+  namespace = "checkout"
+  deployment = "checkout-api"
+
+Stable dimensions reduce series dramatically (from thousands → tens).
+
+⸻
+
+🔹 Example 3 – Exploding Dimension: Pod UID
+
+If OpenTelemetry is configured to include pod_uid, each pod restart creates a new time series:
+
+k8s.container.cpu.usageCores{pod_uid="cfe1234"} 
+k8s.container.cpu.usageCores{pod_uid="cfe5678"} 
+...
+
+→ This doubles or triples cardinality after each rolling deployment.
+
+Fix: Drop pod_uid attribute using the Transform Processor.
+
+processors:
+  transform:
+    metric_statements:
+      - context: metric
+        statements:
+          - delete_key(attributes, "pod_uid")
+
+
+⸻
+
+🔹 Example 4 – Namespace Aggregation to Reduce Cardinality
+
+Group metrics by namespace instead of individual pods:
+
+processors:
+  groupbyattrs:
+    keys: [ "cluster", "namespace", "deployment" ]
+
+Resulting metric:
+
+k8s.container.cpu.usageCores{cluster="prod",namespace="checkout",deployment="checkout-api"}
+
+→ All pods of checkout-api share one series per namespace.
+
+⸻
+
+🔹 Example 5 – Combine Dynamic Labels into Static Sets
+
+Transform labels with stable identifiers:
+
+processors:
+  transform:
+    metric_statements:
+      - context: metric
+        statements:
+          - set(attributes["workload"], attributes["k8s.deployment.name"])
+          - delete_key(attributes, "pod_name")
+          - delete_key(attributes, "container_id")
+
+
+⸻
+
+🔹 NRQL Example – Estimate Cardinality
+
+FROM Metric 
+SELECT count(unique(metricTimesliceName)) 
+WHERE instrumentation.provider = 'opentelemetry' 
+  AND k8s.cluster.name = 'prod-cluster' 
+SINCE 1 day ago
+
+
+⸻
+
+✅ Best Practices to Control Cardinality
+
+Practice	Description
+Avoid dynamic attributes	Remove pod_uid, container_id, ip, hostname
+Aggregate by stable keys	Use cluster, namespace, deployment
+Use groupbyattrs	Aggregate high-frequency labels early
+Normalize label values	Map variable strings (e.g., versions) into categorical labels (v1, v2)
+Monitor regularly	Use New Relic → Metrics → Cardinality Analysis dashboard
+Limit metric proliferation	Merge redundant custom metric names
+
+
+⸻
+
+⚖️ 4. Comparison Summary
+
+Category	Event	Metric	Dimensional Cardinality
+Nature	Discrete record	Aggregated time series	Count of unique metric series
+Generated By	k8sobjectsreceiver, otlp spans/logs	kubeletstatsreceiver, k8sclusterreceiver	Derived from metric dimensions
+Storage	Span, Log, K8sEvent	Metric, K8sContainerSample	Analytical property
+Use Case	Debugging & trace analysis	Dashboards & alerting	Cost & performance optimization
+Example	FROM Span SELECT average(duration)	FROM Metric SELECT avg(k8s.node.cpu.usagePercent)	FROM Metric SELECT count(unique(metricTimesliceName))
+
+
+⸻
+
+🧠 5. Conceptual Analogy
+
+Concept	Analogy	Example in Kubernetes
+Event	Every car passing a checkpoint	Each pod start/restart or span event
+Metric	Average speed per minute	Average CPU/memory usage per node
+Dimensional Cardinality	Number of unique sensors per lane	Number of unique (label sets) in metrics
+
+
+⸻
+
+🧰 6. Practical Pipeline Recommendations (OTel Collector)
+
+receivers:
+  - k8scluster
+  - kubeletstats
+
+processors:
+  transform:
+    metric_statements:
+      - delete_key(attributes, "pod_uid")
+      - delete_key(attributes, "container_id")
+      - set(attributes["deployment"], attributes["k8s.deployment.name"])
+  groupbyattrs:
+    keys: ["cluster", "namespace", "deployment"]
+  batch:
+    timeout: 5s
+
+exporters:
+  - newrelic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [k8scluster, kubeletstats]
+      processors: [transform, groupbyattrs, batch]
+      exporters: [newrelic]
+
+→ This pipeline ensures low cardinality, high signal metrics flow into New Relic.
+
+⸻
+
+🧭 7. Summary Takeaways
+	•	Use events for deep debugging (per-occurrence insights).
+	•	Use metrics for system trends (aggregated views).
+	•	Continuously optimize dimensional cardinality to control cost and query speed.
+	•	Apply OTel processors like transform, groupbyattrs, batch before export.
+	•	Monitor cardinality trends in New Relic UI.
+
+⸻
+
+Would you like me to:
+	1.	Add a visual architecture diagram (OpenTelemetry → Collector → New Relic → Metrics Cardinality Dashboard)
+	2.	And export this as a Confluence-style PDF (headings, tables, and diagrams embedded)?
+
+If yes, I’ll generate the Confluence-formatted PDF next.
