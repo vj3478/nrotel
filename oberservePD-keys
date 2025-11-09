@@ -1,109 +1,313 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-List Observe Shared Actions (channel actions) that point to PagerDuty.
+Observe -> list Shared/Channel Actions that point to PagerDuty (Events API),
+reading ALL settings from a single "finding" config file (YAML or JSON).
 
-Setup:
-  export OBSERVE_API_BASE="https://<your-observe-api-host>"  # e.g., https://api.observeinc.com (confirm in your docs)
-  export OBSERVE_API_TOKEN="obsv_xxx"                         # API token from Observe
-  export OBSERVE_ACTIONS_PATH="/v1/channel-actions"           # Path to the Channel Action LIST endpoint from your API ref
+Usage:
+  python observe_list_pagerduty_actions.py --config observe_findings.yaml
+  # or .json
 
-Run:
-  python observe_list_pagerduty_actions.py > pd_observe_actions.csv
+Dependencies:
+  pip install requests
+  # YAML support (optional, only if you use YAML):
+  pip install PyYAML
+
+Config schema (YAML/JSON):
+  global:
+    output_csv: "pd_observe_actions.csv"
+    page_size: 200
+    connect_timeout: 5
+    read_timeout: 30
+    max_retries: 5
+    retry_backoff: 0.5
+    pagerduty_host: "events.pagerduty.com"
+    proxy: "http://proxy.corp:8080"    # optional, omit if none
+  accounts:
+    - name: "prod"
+      base: "https://api.observeinc.com"
+      token: "obsv_prod_***"
+      actions_path: "/v1/channel-actions"  # optional; defaults below
+    - name: "staging"
+      base: "https://api.us-west-2.observeinc.com"
+      token: "obsv_stg_***"
+
+What it does:
+  - Calls the Observe Channel/Shared Actions list endpoint per account.
+  - Filters to webhook actions whose URL host matches pagerduty_host.
+  - Writes a CSV with columns:
+      account_name, name, id, kind, webhook_url, description
 """
 
+import argparse
 import csv
+import json
 import os
 import sys
 import time
 import urllib.parse
+from typing import Dict, Iterable, List, Optional, Tuple
+
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-BASE = os.getenv("OBSERVE_API_BASE", "").rstrip("/")
-TOKEN = os.getenv("OBSERVE_API_TOKEN", "")
-ACTIONS_PATH = os.getenv("OBSERVE_ACTIONS_PATH", "/v1/channel-actions")  # adjust to your API doc
-PAGE_SIZE = int(os.getenv("PAGE_SIZE", "200"))
+DEFAULT_ACTIONS_PATH = "/v1/channel-actions"
 
-if not BASE or not TOKEN:
-    print("ERROR: Set OBSERVE_API_BASE and OBSERVE_API_TOKEN env vars.", file=sys.stderr)
-    sys.exit(1)
+def load_config(path: str) -> dict:
+    """Load YAML (if PyYAML available) or JSON based on extension; fallback tries both."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Config file not found: {path}")
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "Authorization": f"Bearer {TOKEN}",
-    "Accept": "application/json",
-    "User-Agent": "observe-pd-audit/1.0"
-})
+    _, ext = os.path.splitext(path.lower())
 
-def list_channel_actions():
+    # Prefer explicit extension
+    if ext in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore
+        except Exception as e:
+            raise RuntimeError("YAML config requested but PyYAML is not installed. Run: pip install PyYAML") from e
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    elif ext == ".json":
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # Fallback: try YAML then JSON
+    try:
+        import yaml  # type: ignore
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_global(cfg: dict, key: str, default=None):
+    g = cfg.get("global") or {}
+    return g.get(key, default)
+
+def make_session(token: str, proxy_url: Optional[str], max_retries: int, backoff: float) -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "observe-pd-audit/3.0",
+    })
+
+    # Proxies (single setting for both http/https)
+    if proxy_url:
+        s.proxies.update({"http": proxy_url, "https": proxy_url})
+
+    retry = Retry(
+        total=max_retries,
+        connect=max_retries,
+        read=max_retries,
+        backoff_factor=backoff,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+def list_channel_actions(session: requests.Session, base: str, actions_path: str,
+                         page_size: int, timeout: Tuple[float, float]) -> Iterable[dict]:
     """
-    Generator yielding channel actions.
-    Supports naive 'page/next' styles if the API provides pagination hints.
-    If your API uses cursor params (e.g., ?limit=&cursor=), adapt below.
+    Yields channel/shared actions from Observe.
+    Supports common pagination shapes:
+      - array response
+      - {items:[...], next:"cursor"} / {results:[...], next:"..."}
+      - {links:{next:"https://..."}}
     """
-    url = f"{BASE}{ACTIONS_PATH}"
-    params = {"limit": PAGE_SIZE}
+    url = f"{base.rstrip('/')}{actions_path}"
+    params: Dict[str, str] = {"limit": str(page_size)}
+
     while True:
-        r = SESSION.get(url, params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
+        try:
+            resp = session.get(url, params=params, timeout=timeout)
+        except requests.RequestException as e:
+            print(f"ERROR: network error on GET {url}: {e}", file=sys.stderr)
+            break
 
-        # Expect a list of actions; adjust keys based on your API shape.
-        items = data if isinstance(data, list) else data.get("items") or data.get("results") or []
+        if resp.status_code >= 400:
+            preview = (resp.text or "")[:300].replace("\n", " ")
+            print(f"ERROR: HTTP {resp.status_code} for {resp.url} body[0:300]={preview}", file=sys.stderr)
+            break
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            print(f"ERROR: JSON decode failed for {resp.url}: {e}", file=sys.stderr)
+            break
+
+        items = []
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            items = data.get("items") or data.get("results") or []
+        else:
+            print(f"ERROR: Unexpected response schema from {resp.url}", file=sys.stderr)
+            break
+
         for item in items:
             yield item
 
-        # Handle pagination if present (common fields: next, nextPageToken, links.next)
-        next_url = data.get("next") or data.get("nextPage") or (data.get("links") or {}).get("next")
+        next_url = None
+        if isinstance(data, dict):
+            next_url = data.get("next") or data.get("nextPage")
+            links = data.get("links") or {}
+            if not next_url:
+                next_url = links.get("next")
+
         if not next_url:
             break
-        # Some APIs return absolute next links; others return cursors. Support both.
-        if next_url.startswith("http"):
+
+        # absolute vs cursor
+        if isinstance(next_url, str) and next_url.startswith("http"):
             url, params = next_url, {}
         else:
-            params = {"cursor": next_url}
-        time.sleep(0.2)
+            url = f"{base.rstrip('/')}{actions_path}"
+            params = {"limit": str(page_size), "cursor": str(next_url)}
 
-def is_pagerduty_webhook(action):
-    """
-    Heuristic: webhook actions whose URL host contains events.pagerduty.com.
-    Adapt 'kind'/'type'/'config' keys based on your API’s schema.
-    """
-    kind = (action.get("type") or action.get("kind") or "").lower()
-    if "webhook" not in kind:
-        return False
+        time.sleep(0.2)  # gentle pacing
 
-    # Common places a webhook URL might live:
-    url = (
-        action.get("url")
-        or (action.get("config") or {}).get("url")
-        or (action.get("destination") or {}).get("url")
-    )
-    if not url:
-        return False
-
-    host = urllib.parse.urlparse(url).hostname or ""
-    return "events.pagerduty.com" in host.lower()
-
-def summarize(action):
-    return {
-        "name": action.get("name") or action.get("summary") or "",
-        "id": action.get("id") or action.get("uuid") or "",
-        "kind": action.get("type") or action.get("kind") or "",
-        "webhook_url": (
+def is_pagerduty_webhook(action: dict, pd_host: str) -> bool:
+    """Return True for webhook actions whose URL host contains the configured PagerDuty host."""
+    try:
+        kind = (action.get("type") or action.get("kind") or "").lower()
+        if "webhook" not in kind:
+            return False
+        url = (
             action.get("url")
             or (action.get("config") or {}).get("url")
             or (action.get("destination") or {}).get("url")
             or ""
-        ),
-        "description": action.get("description") or "",
-    }
+        )
+        if not url:
+            return False
+        host = urllib.parse.urlparse(url).hostname or ""
+        return pd_host.lower() in host.lower()
+    except Exception:
+        return False
+
+def summarize(action: dict, account_name: str) -> dict:
+    def g(*keys, default=""):
+        for k in keys:
+            if k in action and action[k]:
+                return action[k]
+        return default
+
+    try:
+        return {
+            "account_name": account_name,
+            "name": g("name", "summary"),
+            "id": g("id", "uuid"),
+            "kind": g("type", "kind"),
+            "webhook_url": (
+                g("url")
+                or (action.get("config") or {}).get("url", "")
+                or (action.get("destination") or {}).get("url", "")
+            ),
+            "description": g("description"),
+        }
+    except Exception as e:
+        return {
+            "account_name": account_name,
+            "name": "",
+            "id": "",
+            "kind": "",
+            "webhook_url": "",
+            "description": f"(summarize error: {e})"
+        }
 
 def main():
-    rows = [summarize(a) for a in list_channel_actions() if is_pagerduty_webhook(a)]
-    writer = csv.DictWriter(sys.stdout, fieldnames=["name", "id", "kind", "webhook_url", "description"])
-    writer.writeheader()
-    for row in rows:
-        writer.writerow(row)
+    ap = argparse.ArgumentParser(description="List Observe PagerDuty webhook actions (from config file).")
+    ap.add_argument("--config", required=True, help="Path to YAML or JSON config file.")
+    args = ap.parse_args()
+
+    # Load config
+    try:
+        cfg = load_config(args.config) or {}
+    except Exception as e:
+        print(f"FATAL: cannot load config '{args.config}': {e}", file=sys.stderr)
+        sys.exit(2)
+
+    # Globals with defaults
+    output_csv = get_global(cfg, "output_csv", "pd_observe_actions.csv")
+    page_size = int(get_global(cfg, "page_size", 200))
+    connect_timeout = float(get_global(cfg, "connect_timeout", 5))
+    read_timeout = float(get_global(cfg, "read_timeout", 30))
+    timeout = (connect_timeout, read_timeout)
+    max_retries = int(get_global(cfg, "max_retries", 5))
+    retry_backoff = float(get_global(cfg, "retry_backoff", 0.5))
+    proxy_url = get_global(cfg, "proxy", None)
+    pd_host = get_global(cfg, "pagerduty_host", "events.pagerduty.com")
+
+    accounts = cfg.get("accounts") or []
+    if not isinstance(accounts, list) or not accounts:
+        print("FATAL: config must contain a non-empty 'accounts' array.", file=sys.stderr)
+        sys.exit(3)
+
+    rows: List[dict] = []
+
+    for acct in accounts:
+        try:
+            name = (acct.get("name") or acct.get("id") or "account")
+            base = (acct.get("base") or "").rstrip("/")
+            token = acct.get("token") or ""
+            actions_path = acct.get("actions_path") or DEFAULT_ACTIONS_PATH
+
+            if not base or not token:
+                print(f"WARNING: Skipping account '{name}' due to missing base/token.", file=sys.stderr)
+                continue
+
+            # Allow per-account proxy override if provided in the account block
+            acct_proxy = acct.get("proxy", proxy_url)
+
+            try:
+                session = make_session(token, acct_proxy, max_retries, retry_backoff)
+            except Exception as e:
+                print(f"ERROR: could not create session for '{name}': {e}", file=sys.stderr)
+                continue
+
+            try:
+                for action in list_channel_actions(session, base, actions_path, page_size, timeout):
+                    try:
+                        if is_pagerduty_webhook(action, pd_host):
+                            rows.append(summarize(action, name))
+                    except Exception as e:
+                        print(f"WARNING: action filtering error in '{name}': {e}", file=sys.stderr)
+                        continue
+            except Exception as e:
+                print(f"ERROR: listing actions failed for '{name}': {e}", file=sys.stderr)
+                continue
+        except Exception as e:
+            print(f"ERROR: unhandled account error: {e}", file=sys.stderr)
+            continue
+
+    # Write CSV
+    try:
+        fieldnames = ["account_name", "name", "id", "kind", "webhook_url", "description"]
+        with open(output_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(r)
+        print(f"OK: wrote {len(rows)} PagerDuty webhook actions to {output_csv}")
+    except Exception as e:
+        print(f"FATAL: failed writing CSV '{output_csv}': {e}", file=sys.stderr)
+        sys.exit(4)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"FATAL: {e}", file=sys.stderr)
+        sys.exit(1)
