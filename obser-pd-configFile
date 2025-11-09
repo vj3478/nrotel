@@ -1,0 +1,25 @@
+{
+  "global": {
+    "output_csv": "pd_observe_actions.csv",
+    "page_size": 200,
+    "connect_timeout": 5,
+    "read_timeout": 30,
+    "max_retries": 5,
+    "retry_backoff": 0.5,
+    "pagerduty_host": "events.pagerduty.com",
+    "proxy": "http://proxy.corp:8080"
+  },
+  "accounts": [
+    {
+      "name": "prod",
+      "base": "https://api.observeinc.com",
+      "token": "obsv_prod_***",
+      "actions_path": "/v1/channel-actions"
+    },
+    {
+      "name": "staging",
+      "base": "https://api.us-west-2.observeinc.com",
+      "token": "obsv_stg_***"
+    }
+  ]
+}
