@@ -1,0 +1,109 @@
+import requests
+import json
+
+# ---------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------
+
+# Example: "https://123456789012.observeinc.com"
+OBSERVE_BASE_URL = "https://YOUR_ACCOUNT_ID.observeinc.com"
+
+# Service Account login email & password
+OBSV_USER_EMAIL = "service_account_email@example.com"
+OBSV_USER_PASSWORD = "SERVICE_ACCOUNT_PASSWORD"
+
+# Optional token name (for audit purposes)
+TOKEN_NAME = "api-monitor-fetch-token"
+
+
+# ---------------------------------------------------------
+# STEP 1: LOGIN AND GET BEARER TOKEN
+# ---------------------------------------------------------
+
+def get_bearer_token():
+    url = f"{OBSERVE_BASE_URL}/v1/login"
+    
+    payload = {
+        "user_email": OBSV_USER_EMAIL,
+        "user_password": OBSV_USER_PASSWORD,
+        "tokenName": TOKEN_NAME
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+        if resp.status_code != 200:
+            raise Exception(f"Login failed ({resp.status_code}): {resp.text}")
+
+        data = resp.json()
+
+        # Observe returns token under "token" or "access_token" depending on version
+        token = data.get("token") or data.get("access_token")
+        if not token:
+            raise Exception(f"Login successful but token not found: {data}")
+
+        print("✅ Login successful — Bearer token generated")
+        return token
+
+    except Exception as e:
+        raise Exception(f"❌ Error obtaining token: {e}")
+
+
+# ---------------------------------------------------------
+# STEP 2: FETCH ALL MONITORS USING THE BEARER TOKEN
+# ---------------------------------------------------------
+
+def get_all_monitors(bearer_token):
+    monitors = []
+    next_page = None
+
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json"
+    }
+
+    while True:
+        url = f"{OBSERVE_BASE_URL}/v1/monitors"
+        if next_page:
+            url += f"?page={next_page}"
+
+        resp = requests.get(url, headers=headers, timeout=30)
+
+        if resp.status_code == 401:
+            raise Exception("❌ Unauthorized (401): Token invalid or expired")
+
+        if resp.status_code == 403:
+            raise Exception("❌ Forbidden (403): Missing Monitor permissions")
+
+        if resp.status_code != 200:
+            raise Exception(f"❌ API Error {resp.status_code}: {resp.text}")
+
+        data = resp.json()
+
+        # Add results
+        monitors.extend(data.get("data", []))
+
+        # Handle pagination
+        next_page = data.get("next_page_token")
+        if not next_page:
+            break
+
+    return monitors
+
+
+# ---------------------------------------------------------
+# MAIN EXECUTION
+# ---------------------------------------------------------
+
+if __name__ == "__main__":
+    try:
+        print("🔐 Requesting Bearer token...")
+        token = get_bearer_token()
+
+        print("📡 Fetching all monitors...")
+        monitors = get_all_monitors(token)
+
+        print(f"✅ Retrieved {len(monitors)} monitors\n")
+        print(json.dumps(monitors, indent=2))
+
+    except Exception as e:
+        print(str(e))
