@@ -1,111 +1,289 @@
 import requests
-import json
+import csv
+from typing import List, Dict, Any, Optional
 
-# ---------------------------------------------------------
-# CONFIG  (use the exact host you see in the browser)
-# ---------------------------------------------------------
-OBSERVE_BASE_URL = "https://YOUR_REAL_HOST.observeinc.com"
+# ==== CONFIG ====
+OBSERVE_URL   = "https://YOUR_TENANT.observe.app"   # no trailing slash
+USERNAME      = "your.user@example.com"
+PASSWORD      = "your-password"
 
-OBSV_USER_EMAIL = "service_account_email@example.com"
-OBSV_USER_PASSWORD = "SERVICE_ACCOUNT_PASSWORD"
-TOKEN_NAME = "api-monitor-reader"
+# These paths are based on the docs; change if your env is slightly different
+LOGIN_ENDPOINT           = "/v1/login"
+MONITORS_ENDPOINT        = "/v1/monitors"
+SHARED_ACTIONS_ENDPOINT  = "/v1/shared_actions"  # if this 404s, check the API docs / swagger
 
-
-# ---------------- LOGIN ----------------
-
-def login_and_get_auth():
-    """
-    Call /v1/login and return (customer_id, access_key).
-    """
-    url = f"{OBSERVE_BASE_URL}/v1/login"
-    payload = {
-        "user_email": OBSV_USER_EMAIL,
-        "user_password": OBSV_USER_PASSWORD,
-        "tokenName": TOKEN_NAME,
-    }
-
-    resp = requests.post(url, json=payload, timeout=30)
-    if resp.status_code != 200:
-        raise Exception(f"Login failed ({resp.status_code}): {resp.text}")
-
-    data = resp.json()      # e.g. {'ok': True, 'access_key': '...', 'customer_id': 1631402...}
-
-    access_key = data.get("access_key")
-    customer_id = data.get("customer_id")
-
-    if not access_key or not customer_id:
-        raise Exception(f"Login successful but access_key/customer_id missing: {data}")
-
-    print("✅ Login successful")
-    return str(customer_id), access_key
+SESSION = requests.Session()
+SESSION.headers.update({"Content-Type": "application/json"})
 
 
-# ------------- FETCH MONITORS -------------
+# ---------- Auth ----------
 
-def fetch_all_monitors(customer_id, access_key):
-    """
-    Fetch all monitors, handling both:
-      - [ {...}, {...} ]                 (list)
-      - { "data": [..], "next_page_token": ... }  (dict with pagination)
-    """
-    monitors = []
-    next_page = None
+def login_and_get_bearer_token() -> str:
+    """Log in and return a Bearer token (or access_key fallback)."""
+    url = OBSERVE_URL + LOGIN_ENDPOINT
+    payload = {"username": USERNAME, "password": PASSWORD}
 
-    # If your tenant only works with one of these formats,
-    # you can hard-code the one that works and drop the other.
-    auth_header = f"Bearer {customer_id} {access_key}"  # try this first
-    headers = {
-        "Authorization": auth_header,
-        "Content-Type": "application/json",
-    }
+    resp = SESSION.post(url, json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
 
+    # Typical shape: {"ok": true, "token": "...."}
+    token = data.get("token")
+
+    # Some tenants return access_key instead of token – fall back to that
+    if not token:
+        token = data.get("access_key")
+
+    if not token:
+        raise RuntimeError(f"Login succeeded but no token/access_key in response: {data}")
+
+    SESSION.headers["Authorization"] = f"Bearer {token}"
+    return token
+
+
+# ---------- Fetch helpers ----------
+
+def fetch_all_monitors() -> List[Dict[str, Any]]:
+    """GET /v1/monitors with basic paging support."""
+    url = OBSERVE_URL + MONITORS_ENDPOINT
+    monitors: List[Dict[str, Any]] = []
+
+    params = {"limit": 200}
     while True:
-        url = f"{OBSERVE_BASE_URL}/v1/monitors"
-        if next_page:
-            url += f"?page={next_page}"
-
-        resp = requests.get(url, headers=headers, timeout=30)
-
-        if resp.status_code == 401:
-            # If this happens, try switching to "Bearer <access_key>" only
-            raise Exception("❌ 401 Unauthorized: check Authorization header / host")
-        if resp.status_code == 403:
-            raise Exception("❌ 403 Forbidden: token lacks monitor permissions")
-        if resp.status_code != 200:
-            raise Exception(f"❌ API error {resp.status_code}: {resp.text}")
-
+        resp = SESSION.get(url, params=params, timeout=30)
+        resp.raise_for_status()
         data = resp.json()
 
-        # ---- Shape 1: plain list ----
+        # v1 is usually a list, but handle dict wrapper too
         if isinstance(data, list):
             monitors.extend(data)
-            break  # no pagination if it's just a list
-
-        # ---- Shape 2: dict with 'data' + 'next_page_token' ----
+            break
         elif isinstance(data, dict):
-            monitors.extend(data.get("data", []))
-            next_page = data.get("next_page_token")
-            if not next_page:
+            items = data.get("items") or data.get("results") or []
+            monitors.extend(items)
+            # look for pagination token
+            next_token = data.get("nextPageToken") or data.get("next_token")
+            if not next_token:
                 break
-
+            params["page_token"] = next_token
         else:
-            raise Exception(f"Unexpected JSON type from /v1/monitors: {type(data)}")
+            raise RuntimeError(f"Unexpected monitors payload type: {type(data)}")
 
     return monitors
 
 
-# ----------------- MAIN ------------------
+def fetch_all_shared_actions() -> Dict[str, Dict[str, Any]]:
+    """
+    Fetch all Shared Actions and return a dict keyed by ID.
+
+    NOTE: if your endpoint path is different, update SHARED_ACTIONS_ENDPOINT above.
+    """
+    url = OBSERVE_URL + SHARED_ACTIONS_ENDPOINT
+    shared_map: Dict[str, Dict[str, Any]] = {}
+
+    try:
+        resp = SESSION.get(url, timeout=30)
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        raise RuntimeError(
+            f"Error calling {SHARED_ACTIONS_ENDPOINT}: {e}. "
+            "Check your Observe API docs for the exact shared-actions endpoint."
+        )
+
+    data = resp.json()
+
+    # Handle both list and dict-wrapped responses
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("items") or data.get("results") or []
+    else:
+        raise RuntimeError(f"Unexpected shared actions payload type: {type(data)}")
+
+    for action in items:
+        # try a few common ID keys
+        action_id = (
+            action.get("id")
+            or action.get("uuid")
+            or action.get("shared_action_id")
+            or action.get("action_id")
+        )
+        if action_id:
+            shared_map[str(action_id)] = action
+
+    return shared_map
+
+
+# ---------- Extraction helpers ----------
+
+def get_monitor_id(m: Dict[str, Any]) -> str:
+    return str(m.get("id") or m.get("monitor_id") or m.get("uuid") or "")
+
+
+def get_monitor_name(m: Dict[str, Any]) -> str:
+    return str(m.get("name") or m.get("monitor_name") or "")
+
+
+def get_monitor_created_by(m: Dict[str, Any]) -> str:
+    return (
+        m.get("created_by")
+        or (m.get("metadata") or {}).get("created_by")
+        or ""
+    )
+
+
+def get_monitor_enabled_flag(m: Dict[str, Any]) -> str:
+    # v1 monitors often have enabled / disabled flags; try possibilities
+    if "enabled" in m:
+        return "enabled" if m.get("enabled") else "disabled"
+    if "disabled" in m:
+        return "disabled" if m.get("disabled") else "enabled"
+    return ""
+
+
+def extract_actions_list(m: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Try to find the list of notification / shared actions inside a monitor.
+    Adjust these keys once you print a sample monitor.
+    """
+    for key in ("notification_actions", "actions", "notificationActions"):
+        val = m.get(key)
+        if isinstance(val, list):
+            return val
+    return []
+
+
+def extract_shared_action_id(action: Dict[str, Any]) -> Optional[str]:
+    """
+    Try common patterns for how a monitor refers to a shared action.
+    Adjust this once you see your real payload.
+    """
+    # direct id
+    for key in ("shared_action_id", "sharedActionId", "action_id", "shared_action_uuid"):
+        if key in action and action.get(key) is not None:
+            return str(action.get(key))
+
+    # nested object
+    for key in ("shared_action", "sharedAction"):
+        nested = action.get(key)
+        if isinstance(nested, dict):
+            nid = nested.get("id") or nested.get("uuid") or nested.get("name")
+            if nid:
+                return str(nid)
+
+    return None
+
+
+def summarize_shared_action(action: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Pull out the interesting bits from a shared action object.
+    Adjust fields as needed after inspecting your data.
+    """
+    return {
+        "shared_action_name": action.get("name") or action.get("title") or "",
+        "shared_action_type": action.get("type") or action.get("action_type") or "",
+        "shared_action_channel": (
+            action.get("channel")
+            or action.get("integration_type")
+            or action.get("kind")
+            or ""
+        ),
+        "shared_action_destination": (
+            action.get("url")
+            or action.get("endpoint")
+            or action.get("target")
+            or ""
+        ),
+        "shared_action_description": action.get("description") or "",
+    }
+
+
+# ---------- Main: join monitors + shared actions & write CSV ----------
+
+def export_monitors_with_shared_actions(csv_path: str) -> None:
+    login_and_get_bearer_token()
+
+    monitors = fetch_all_monitors()
+    print(f"Fetched {len(monitors)} monitors")
+
+    shared_actions_map = fetch_all_shared_actions()
+    print(f"Fetched {len(shared_actions_map)} shared actions")
+
+    rows: List[Dict[str, Any]] = []
+
+    for m in monitors:
+        mid = get_monitor_id(m)
+        mname = get_monitor_name(m)
+        created_by = get_monitor_created_by(m)
+        enabled_status = get_monitor_enabled_flag(m)
+
+        actions = extract_actions_list(m)
+        if not actions:
+            # still export a row with no action info if you want
+            rows.append(
+                {
+                    "monitor_id": mid,
+                    "monitor_name": mname,
+                    "monitor_created_by": created_by,
+                    "monitor_status": enabled_status,
+                    "action_severity_filter": "",
+                    "action_is_shared": "",
+                    "shared_action_id": "",
+                    "shared_action_name": "",
+                    "shared_action_type": "",
+                    "shared_action_channel": "",
+                    "shared_action_destination": "",
+                    "shared_action_description": "",
+                }
+            )
+            continue
+
+        for a in actions:
+            shared_id = extract_shared_action_id(a)
+            shared = shared_actions_map.get(shared_id) if shared_id else None
+            shared_summary = summarize_shared_action(shared) if shared else {
+                "shared_action_name": "",
+                "shared_action_type": "",
+                "shared_action_channel": "",
+                "shared_action_destination": "",
+                "shared_action_description": "",
+            }
+
+            row = {
+                "monitor_id": mid,
+                "monitor_name": mname,
+                "monitor_created_by": created_by,
+                "monitor_status": enabled_status,
+                # some likely fields on the monitor action itself:
+                "action_severity_filter": a.get("severity_filter") or a.get("severities") or "",
+                "action_is_shared": "yes" if shared_id else "no",
+                "shared_action_id": shared_id or "",
+                **shared_summary,
+            }
+            rows.append(row)
+
+    fieldnames = [
+        "monitor_id",
+        "monitor_name",
+        "monitor_created_by",
+        "monitor_status",
+        "action_severity_filter",
+        "action_is_shared",
+        "shared_action_id",
+        "shared_action_name",
+        "shared_action_type",
+        "shared_action_channel",
+        "shared_action_destination",
+        "shared_action_description",
+    ]
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Wrote {len(rows)} rows to {csv_path}")
+
 
 if __name__ == "__main__":
-    try:
-        print("🔐 Logging in...")
-        customer_id, access_key = login_and_get_auth()
-
-        print("📡 Fetching monitors...")
-        monitors = fetch_all_monitors(customer_id, access_key)
-
-        print(f"✅ Retrieved {len(monitors)} monitors\n")
-        print(json.dumps(monitors, indent=2))
-
-    except Exception as e:
-        print(e)
+    export_monitors_with_shared_actions("observe_monitors_with_shared_actions.csv")
