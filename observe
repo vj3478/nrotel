@@ -6,7 +6,7 @@ import json
 # CONFIG – UPDATE THESE
 # ---------------------------------------------------------
 
-# Exact host from your Observe UI (no trailing slash)
+# Exact host from Observe UI (no trailing slash)
 # e.g. "https://163140281121.cap1.observeinc.com"
 OBSERVE_BASE_URL = "https://163140281121.cap1.observeinc.com"
 
@@ -22,7 +22,7 @@ CSV_OUTPUT = "observe_monitors_with_actions.csv"
 def login_and_get_auth():
     """
     Call /v1/login and return (customer_id, access_key).
-    Matches the response you showed:
+    Matches response you showed:
       {"ok": true, "access_key": "...", "customer_id": 1631402...}
     """
     url = f"{OBSERVE_BASE_URL}/v1/login"
@@ -108,25 +108,20 @@ def get_monitor_status(m):
 
 def extract_actions(m):
     """
-    Try hard to locate the list of notification / actions on a monitor.
+    Locate the list of actions on the monitor.
     """
-    # Most common in Observe v1 monitors
     for key in (
         "notification_actions",
         "notificationActions",
-        "notifications",
         "actions",
+        "notifications",
     ):
         v = m.get(key)
         if isinstance(v, list):
             return v
 
-    # Fallback: sometimes a single action object
-    for key in (
-        "notification_action",
-        "notificationAction",
-        "action",
-    ):
+    # fallback – single object
+    for key in ("action", "notification_action"):
         v = m.get(key)
         if isinstance(v, dict):
             return [v]
@@ -134,67 +129,72 @@ def extract_actions(m):
     return []
 
 
+def detect_action_type(act):
+    """
+    Best-effort classification of action type.
+    """
+    if "routing_key" in act:
+        return "pagerduty"
+    if "email" in act or "address" in act:
+        return "email"
+    if "url" in act or "endpoint" in act:
+        return "webhook"
+    if "channel" in act and "slack" in str(act.get("channel", "")).lower():
+        return "slack"
+    return "unknown"
+
+
 def summarize_action(act):
     """
-    Summarize a single monitor action / notification, handling nested
-    'shared_action' or 'action' objects, and always include raw JSON.
+    Summarize a single action object based on your sample JSON
+    (PagerDuty) and generic patterns for other types.
     """
 
-    # Many schemas wrap the actual shared action here:
-    # { "severities": [...], "shared_action": { ... } }
-    # or { "severities": [...], "action": { ... } }
-    shared_obj = None
+    action_type = detect_action_type(act)
 
-    if isinstance(act.get("shared_action"), dict):
-        shared_obj = act["shared_action"]
-    elif isinstance(act.get("sharedAction"), dict):
-        shared_obj = act["sharedAction"]
-    elif isinstance(act.get("action"), dict):
-        shared_obj = act["action"]
+    # Common fields for all types
+    routing_key = act.get("routing_key", "")
+    client = act.get("client", "")
+    client_url = act.get("client_url", "")
 
-    # If we found a nested object, use that as the base; otherwise use act itself
-    base = shared_obj if shared_obj is not None else act
-    is_shared = "yes" if shared_obj is not None else (
-        "yes" if base.get("shared_action_id") or base.get("sharedActionId") else "no"
+    # PD-style payload (from your sample)
+    payload = act.get("payload", {}) if isinstance(act.get("payload"), dict) else {}
+    summary = payload.get("summary", "")
+    severity = payload.get("severity", "")
+    timestamp = payload.get("timestamp", "")
+
+    # For email/webhook/etc, try fallback keys
+    if action_type == "email":
+        if not summary:
+            summary = act.get("subject", "")
+        if not client:
+            client = act.get("from", "") or act.get("sender", "")
+        if not client_url:
+            client_url = act.get("reply_to", "")
+
+    if action_type == "webhook":
+        if not client_url:
+            client_url = act.get("url", "") or act.get("endpoint", "")
+
+    # shared-action hints
+    shared_action_id = (
+        act.get("shared_action_id")
+        or act.get("sharedActionId")
+        or act.get("shared_action_uuid")
+        or ""
     )
-
-    def first_non_empty(*keys):
-        for k in keys:
-            if k in base and base.get(k):
-                return base.get(k)
-            if k in act and act.get(k):
-                return act.get(k)
-        return ""
-
-    action_type = first_non_empty("type", "action_type", "channel_type", "kind")
-    channel = first_non_empty("channel", "notificationChannel", "integration_type", "provider")
-    target = first_non_empty(
-        "email",
-        "address",
-        "url",
-        "endpoint",
-        "target",
-        "service_key",
-        "routing_key",
-    )
-    shared_action_id = first_non_empty(
-        "shared_action_id",
-        "sharedActionId",
-        "shared_action_uuid",
-        "id",
-        "uuid",
-    )
-
-    severities = act.get("severities") or act.get("severity_filter") or act.get("severity") or ""
+    is_shared = "yes" if shared_action_id else "no"
 
     return {
-        "action_type": str(action_type),
-        "action_channel": str(channel),
-        "action_target": str(target),
-        "is_shared_action": "yes" if is_shared == "yes" else "no",
-        "shared_action_id": str(shared_action_id),
-        "action_severities": ",".join(severities) if isinstance(severities, list) else str(severities),
-        # always include the raw JSON so you can see everything
+        "action_type": action_type,
+        "routing_key": routing_key,
+        "client": client,
+        "client_url": client_url,
+        "summary": summary,
+        "severity": severity,
+        "timestamp": timestamp,
+        "is_shared_action": is_shared,
+        "shared_action_id": shared_action_id,
         "raw_action_json": json.dumps(act),
     }
 
@@ -207,7 +207,7 @@ def export_monitors_with_actions(csv_path):
     monitors = fetch_all_monitors(customer_id, access_key)
     print(f"Fetched {len(monitors)} monitors")
 
-    # If you want to see the raw shape once, uncomment:
+    # If you want to inspect raw monitor JSON once:
     # print(json.dumps(monitors[0], indent=2))
 
     rows = []
@@ -228,9 +228,12 @@ def export_monitors_with_actions(csv_path):
                     "created_by": created_by,
                     "status": status,
                     "action_type": "",
-                    "action_channel": "",
-                    "action_target": "",
-                    "action_severities": "",
+                    "routing_key": "",
+                    "client": "",
+                    "client_url": "",
+                    "summary": "",
+                    "severity": "",
+                    "timestamp": "",
                     "is_shared_action": "",
                     "shared_action_id": "",
                     "raw_action_json": "",
@@ -256,9 +259,12 @@ def export_monitors_with_actions(csv_path):
         "created_by",
         "status",
         "action_type",
-        "action_channel",
-        "action_target",
-        "action_severities",
+        "routing_key",
+        "client",
+        "client_url",
+        "summary",
+        "severity",
+        "timestamp",
         "is_shared_action",
         "shared_action_id",
         "raw_action_json",
