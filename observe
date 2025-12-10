@@ -1,20 +1,19 @@
 import requests
 import json
 
-# ---------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------
+# ---------------- CONFIG ----------------
 
-OBSERVE_BASE_URL = "https://163140221212.observeinc.com"  # <-- your customer_id
+# Use your tenant ID in the hostname
+OBSERVE_BASE_URL = "https://163140221212.observeinc.com"
+
 OBSV_USER_EMAIL = "service_account_email@example.com"
 OBSV_USER_PASSWORD = "SERVICE_ACCOUNT_PASSWORD"
 TOKEN_NAME = "api-monitor-reader"
 
-# ---------------------------------------------------------
-# LOGIN: GET BEARER TOKEN
-# ---------------------------------------------------------
 
-def get_bearer_token():
+# ------------- STEP 1: LOGIN -------------
+
+def login_and_get_auth_parts():
     url = f"{OBSERVE_BASE_URL}/v1/login"
     payload = {
         "user_email": OBSV_USER_EMAIL,
@@ -23,30 +22,30 @@ def get_bearer_token():
     }
 
     resp = requests.post(url, json=payload, timeout=30)
-
     if resp.status_code != 200:
         raise Exception(f"Login failed ({resp.status_code}): {resp.text}")
 
     data = resp.json()
+    # Expect: {"ok": true, "access_key": "...", "customer_id": 163140221212}
+    access_key = data.get("access_key")
+    customer_id = data.get("customer_id")
 
-    # Handle different response shapes: token / access_token / access_key
-    token = data.get("token") or data.get("access_token") or data.get("access_key")
-    if not token:
-        raise Exception(f"Login successful but token not found: {data}")
+    if not access_key or not customer_id:
+        raise Exception(f"Login successful but access_key/customer_id missing: {data}")
 
-    print("✅ Login successful — Bearer token generated")
-    return token
+    print("✅ Login successful — got access_key and customer_id")
+    return str(customer_id), access_key
 
-# ---------------------------------------------------------
-# FETCH ALL MONITORS
-# ---------------------------------------------------------
 
-def get_all_monitors(bearer_token):
+# ------ STEP 2: FETCH ALL MONITORS -------
+
+def get_all_monitors(customer_id, access_key):
     monitors = []
     next_page = None
 
+    # *** IMPORTANT: customer_id + access_key in header ***
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
+        "Authorization": f"Bearer {customer_id} {access_key}",
         "Content-Type": "application/json",
     }
 
@@ -58,9 +57,9 @@ def get_all_monitors(bearer_token):
         resp = requests.get(url, headers=headers, timeout=30)
 
         if resp.status_code == 401:
-            raise Exception("❌ 401 Unauthorized: token invalid/expired")
+            raise Exception("❌ 401 Unauthorized: check Authorization header format")
         if resp.status_code == 403:
-            raise Exception("❌ 403 Forbidden: service account lacks monitor permissions")
+            raise Exception("❌ 403 Forbidden: service account is missing monitor permissions")
         if resp.status_code != 200:
             raise Exception(f"❌ API error {resp.status_code}: {resp.text}")
 
@@ -73,17 +72,16 @@ def get_all_monitors(bearer_token):
 
     return monitors
 
-# ---------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------
+
+# ----------------- MAIN ------------------
 
 if __name__ == "__main__":
     try:
-        print("🔐 Requesting bearer token...")
-        token = get_bearer_token()
+        print("🔐 Logging in...")
+        customer_id, access_key = login_and_get_auth_parts()
 
         print("📡 Fetching monitors...")
-        monitors = get_all_monitors(token)
+        monitors = get_all_monitors(customer_id, access_key)
 
         print(f"✅ Retrieved {len(monitors)} monitors\n")
         print(json.dumps(monitors, indent=2))
