@@ -1,19 +1,22 @@
 import requests
 import json
 
-# ---------------- CONFIG ----------------
-
-# Use your tenant ID in the hostname
-OBSERVE_BASE_URL = "https://163140221212.observeinc.com"
+# -------------------------------------------------------------------
+# CONFIG - use EXACT host you see in the browser for your workspace
+# -------------------------------------------------------------------
+# Example: "https://163140221212.observeinc.com"
+# or sometimes "https://yourcompany.observeinc.com"
+OBSERVE_BASE_URL = "https://YOUR_REAL_HOST.observeinc.com"
 
 OBSV_USER_EMAIL = "service_account_email@example.com"
 OBSV_USER_PASSWORD = "SERVICE_ACCOUNT_PASSWORD"
 TOKEN_NAME = "api-monitor-reader"
 
 
-# ------------- STEP 1: LOGIN -------------
-
-def login_and_get_auth_parts():
+def login_and_get_auth():
+    """
+    Call /v1/login and return (customer_id, access_key).
+    """
     url = f"{OBSERVE_BASE_URL}/v1/login"
     payload = {
         "user_email": OBSV_USER_EMAIL,
@@ -26,40 +29,60 @@ def login_and_get_auth_parts():
         raise Exception(f"Login failed ({resp.status_code}): {resp.text}")
 
     data = resp.json()
-    # Expect: {"ok": true, "access_key": "...", "customer_id": 163140221212}
+    # What you showed in the screenshot:
+    # {"ok": true, "access_key": "...", "customer_id": 1631402...}
     access_key = data.get("access_key")
     customer_id = data.get("customer_id")
 
     if not access_key or not customer_id:
         raise Exception(f"Login successful but access_key/customer_id missing: {data}")
 
-    print("✅ Login successful — got access_key and customer_id")
+    print("✅ Login successful")
     return str(customer_id), access_key
 
 
-# ------ STEP 2: FETCH ALL MONITORS -------
-
-def get_all_monitors(customer_id, access_key):
+def fetch_monitors(customer_id, access_key):
+    """
+    Fetch monitors, first using 'Bearer <customer_id> <access_key>'.
+    If that returns 401, automatically retry with 'Bearer <access_key>'.
+    Handles pagination.
+    """
     monitors = []
     next_page = None
 
-    # *** IMPORTANT: customer_id + access_key in header ***
-    headers = {
-        "Authorization": f"Bearer {customer_id} {access_key}",
-        "Content-Type": "application/json",
-    }
-
-    while True:
+    def do_request(auth_header):
+        nonlocal next_page
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json",
+        }
         url = f"{OBSERVE_BASE_URL}/v1/monitors"
         if next_page:
             url += f"?page={next_page}"
+        return requests.get(url, headers=headers, timeout=30)
 
-        resp = requests.get(url, headers=headers, timeout=30)
+    # --------- Try with "customer_id + access_key" (documented pattern) ---------
+    auth1 = f"Bearer {customer_id} {access_key}"
+    resp = do_request(auth1)
 
+    # If first request fails with 401, retry using just the token
+    if resp.status_code == 401:
+        print("⚠️  Got 401 with 'Bearer <customer_id> <access_key>', "
+              "retrying with 'Bearer <access_key>' only...")
+        auth2 = f"Bearer {access_key}"
+        resp = do_request(auth2)
+        auth_header = auth2
+    else:
+        auth_header = auth1
+
+    # Now loop using whichever header worked (or fail if it still didn't)
+    while True:
         if resp.status_code == 401:
-            raise Exception("❌ 401 Unauthorized: check Authorization header format")
+            raise Exception("❌ 401 Unauthorized even after fallback. "
+                            "Check host, token type, and permissions.")
         if resp.status_code == 403:
-            raise Exception("❌ 403 Forbidden: service account is missing monitor permissions")
+            raise Exception("❌ 403 Forbidden: token is valid, "
+                            "but service account lacks monitor permissions.")
         if resp.status_code != 200:
             raise Exception(f"❌ API error {resp.status_code}: {resp.text}")
 
@@ -70,18 +93,24 @@ def get_all_monitors(customer_id, access_key):
         if not next_page:
             break
 
+        # next pages, reuse the working auth_header
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json",
+        }
+        url = f"{OBSERVE_BASE_URL}/v1/monitors?page={next_page}"
+        resp = requests.get(url, headers=headers, timeout=30)
+
     return monitors
 
-
-# ----------------- MAIN ------------------
 
 if __name__ == "__main__":
     try:
         print("🔐 Logging in...")
-        customer_id, access_key = login_and_get_auth_parts()
+        customer_id, access_key = login_and_get_auth()
 
         print("📡 Fetching monitors...")
-        monitors = get_all_monitors(customer_id, access_key)
+        monitors = fetch_monitors(customer_id, access_key)
 
         print(f"✅ Retrieved {len(monitors)} monitors\n")
         print(json.dumps(monitors, indent=2))
