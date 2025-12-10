@@ -1,7 +1,6 @@
 import requests
 import csv
 import json
-from typing import Any, Dict, List  # 👈 THIS LINE FIXES THE 'List' ERROR
 
 # ---------------------------------------------------------
 # CONFIG - update these
@@ -19,10 +18,10 @@ CSV_OUTPUT = "observe_monitors_with_actions.csv"
 
 # ---------------- LOGIN ----------------
 
-def login_and_get_auth() -> (str, str):
+def login_and_get_auth():
     """
     Call /v1/login and return (customer_id, access_key).
-    Matches the response you showed earlier:
+    This matches the response you showed earlier:
       {"ok": true, "access_key": "...", "customer_id": 1631402...}
     """
     url = f"{OBSERVE_BASE_URL}/v1/login"
@@ -48,7 +47,7 @@ def login_and_get_auth() -> (str, str):
 
 # ------------- FETCH MONITORS -------------
 
-def fetch_all_monitors(customer_id: str, access_key: str) -> List[Dict[str, Any]]:
+def fetch_all_monitors(customer_id, access_key):
     """
     Fetch all monitors from /v1/monitors.
     In your env, /v1/monitors returns a top-level LIST.
@@ -79,15 +78,15 @@ def fetch_all_monitors(customer_id: str, access_key: str) -> List[Dict[str, Any]
 
 # --------- HELPERS TO EXTRACT FIELDS ---------
 
-def get_monitor_id(m: Dict[str, Any]) -> str:
+def get_monitor_id(m):
     return str(m.get("id") or m.get("monitor_id") or m.get("_id") or "")
 
 
-def get_monitor_name(m: Dict[str, Any]) -> str:
+def get_monitor_name(m):
     return str(m.get("name") or m.get("monitor_name") or "")
 
 
-def get_monitor_created_by(m: Dict[str, Any]) -> str:
+def get_monitor_created_by(m):
     return (
         m.get("created_by")
         or (m.get("meta") or {}).get("created_by")
@@ -96,7 +95,7 @@ def get_monitor_created_by(m: Dict[str, Any]) -> str:
     )
 
 
-def get_monitor_status(m: Dict[str, Any]) -> str:
+def get_monitor_status(m):
     if "enabled" in m:
         return "enabled" if m.get("enabled") else "disabled"
     if "disabled" in m:
@@ -104,8 +103,11 @@ def get_monitor_status(m: Dict[str, Any]) -> str:
     return ""
 
 
-def extract_actions(m: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Try common keys for notifications/actions."""
+def extract_actions(m):
+    """
+    Try to locate the list of notification/actions on the monitor.
+    You may need to tweak the keys once you see your JSON.
+    """
     for key in ("notifications", "actions", "notification_actions", "notificationActions"):
         v = m.get(key)
         if isinstance(v, list):
@@ -113,8 +115,13 @@ def extract_actions(m: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
-def summarize_action(act: Dict[str, Any]) -> Dict[str, str]:
-    """Summarize a monitor action (shared or inline). Tweak keys after you inspect JSON."""
+def summarize_action(act):
+    """
+    Summarize a single notification/action object.
+
+    You *will* likely need to tweak key names here after printing
+    one sample monitor to see the actual structure.
+    """
     action_type = (
         act.get("type")
         or act.get("action_type")
@@ -159,16 +166,16 @@ def summarize_action(act: Dict[str, Any]) -> Dict[str, str]:
 
 # ------------- MAIN EXPORT -------------
 
-def export_monitors_with_actions(csv_path: str) -> None:
+def export_monitors_with_actions(csv_path):
     customer_id, access_key = login_and_get_auth()
 
     monitors = fetch_all_monitors(customer_id, access_key)
     print(f"Fetched {len(monitors)} monitors")
 
-    # Uncomment once to see actual JSON and adjust keys if needed
+    # Once, uncomment this to inspect the structure and adjust keys:
     # print(json.dumps(monitors[0], indent=2))
 
-    rows: List[Dict[str, Any]] = []
+    rows = []
 
     for m in monitors:
         mid = get_monitor_id(m)
