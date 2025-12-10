@@ -3,10 +3,11 @@ import csv
 import json
 
 # ---------------------------------------------------------
-# CONFIG - update these
+# CONFIG – UPDATE THESE
 # ---------------------------------------------------------
 
-# Use the exact host you see in the Observe UI
+# Exact host from your Observe UI (no trailing slash)
+# e.g. "https://163140281121.cap1.observeinc.com"
 OBSERVE_BASE_URL = "https://163140281121.cap1.observeinc.com"
 
 OBSV_USER_EMAIL = "service-account@your-company.com"
@@ -21,7 +22,7 @@ CSV_OUTPUT = "observe_monitors_with_actions.csv"
 def login_and_get_auth():
     """
     Call /v1/login and return (customer_id, access_key).
-    This matches the response you showed earlier:
+    Matches the response you showed:
       {"ok": true, "access_key": "...", "customer_id": 1631402...}
     """
     url = f"{OBSERVE_BASE_URL}/v1/login"
@@ -50,7 +51,7 @@ def login_and_get_auth():
 def fetch_all_monitors(customer_id, access_key):
     """
     Fetch all monitors from /v1/monitors.
-    In your env, /v1/monitors returns a top-level LIST.
+    In your env /v1/monitors returns a top-level LIST.
     """
     headers = {
         "Authorization": f"Bearer {customer_id} {access_key}",
@@ -76,7 +77,7 @@ def fetch_all_monitors(customer_id, access_key):
         raise Exception(f"Unexpected /v1/monitors JSON type: {type(data)}")
 
 
-# --------- HELPERS TO EXTRACT FIELDS ---------
+# --------- BASIC MONITOR FIELDS ---------
 
 def get_monitor_id(m):
     return str(m.get("id") or m.get("monitor_id") or m.get("_id") or "")
@@ -103,64 +104,98 @@ def get_monitor_status(m):
     return ""
 
 
+# --------- ACTION / SHARED-ACTION HELPERS ---------
+
 def extract_actions(m):
     """
-    Try to locate the list of notification/actions on the monitor.
-    You may need to tweak the keys once you see your JSON.
+    Try hard to locate the list of notification / actions on a monitor.
     """
-    for key in ("notifications", "actions", "notification_actions", "notificationActions"):
+    # Most common in Observe v1 monitors
+    for key in (
+        "notification_actions",
+        "notificationActions",
+        "notifications",
+        "actions",
+    ):
         v = m.get(key)
         if isinstance(v, list):
             return v
+
+    # Fallback: sometimes a single action object
+    for key in (
+        "notification_action",
+        "notificationAction",
+        "action",
+    ):
+        v = m.get(key)
+        if isinstance(v, dict):
+            return [v]
+
     return []
 
 
 def summarize_action(act):
     """
-    Summarize a single notification/action object.
-
-    You *will* likely need to tweak key names here after printing
-    one sample monitor to see the actual structure.
+    Summarize a single monitor action / notification, handling nested
+    'shared_action' or 'action' objects, and always include raw JSON.
     """
-    action_type = (
-        act.get("type")
-        or act.get("action_type")
-        or act.get("channel_type")
-        or ""
+
+    # Many schemas wrap the actual shared action here:
+    # { "severities": [...], "shared_action": { ... } }
+    # or { "severities": [...], "action": { ... } }
+    shared_obj = None
+
+    if isinstance(act.get("shared_action"), dict):
+        shared_obj = act["shared_action"]
+    elif isinstance(act.get("sharedAction"), dict):
+        shared_obj = act["sharedAction"]
+    elif isinstance(act.get("action"), dict):
+        shared_obj = act["action"]
+
+    # If we found a nested object, use that as the base; otherwise use act itself
+    base = shared_obj if shared_obj is not None else act
+    is_shared = "yes" if shared_obj is not None else (
+        "yes" if base.get("shared_action_id") or base.get("sharedActionId") else "no"
     )
 
-    channel = (
-        act.get("channel")
-        or act.get("notificationChannel")
-        or act.get("integration_type")
-        or action_type
-        or ""
+    def first_non_empty(*keys):
+        for k in keys:
+            if k in base and base.get(k):
+                return base.get(k)
+            if k in act and act.get(k):
+                return act.get(k)
+        return ""
+
+    action_type = first_non_empty("type", "action_type", "channel_type", "kind")
+    channel = first_non_empty("channel", "notificationChannel", "integration_type", "provider")
+    target = first_non_empty(
+        "email",
+        "address",
+        "url",
+        "endpoint",
+        "target",
+        "service_key",
+        "routing_key",
+    )
+    shared_action_id = first_non_empty(
+        "shared_action_id",
+        "sharedActionId",
+        "shared_action_uuid",
+        "id",
+        "uuid",
     )
 
-    target = (
-        act.get("email")
-        or act.get("address")
-        or act.get("url")
-        or act.get("endpoint")
-        or act.get("service_key")
-        or ""
-    )
-
-    shared_action_id = (
-        act.get("shared_action_id")
-        or act.get("sharedActionId")
-        or act.get("shared_action_uuid")
-        or ""
-    )
-
-    is_shared = "yes" if shared_action_id else "no"
+    severities = act.get("severities") or act.get("severity_filter") or act.get("severity") or ""
 
     return {
         "action_type": str(action_type),
         "action_channel": str(channel),
         "action_target": str(target),
+        "is_shared_action": "yes" if is_shared == "yes" else "no",
         "shared_action_id": str(shared_action_id),
-        "is_shared_action": is_shared,
+        "action_severities": ",".join(severities) if isinstance(severities, list) else str(severities),
+        # always include the raw JSON so you can see everything
+        "raw_action_json": json.dumps(act),
     }
 
 
@@ -172,7 +207,7 @@ def export_monitors_with_actions(csv_path):
     monitors = fetch_all_monitors(customer_id, access_key)
     print(f"Fetched {len(monitors)} monitors")
 
-    # Once, uncomment this to inspect the structure and adjust keys:
+    # If you want to see the raw shape once, uncomment:
     # print(json.dumps(monitors[0], indent=2))
 
     rows = []
@@ -195,8 +230,10 @@ def export_monitors_with_actions(csv_path):
                     "action_type": "",
                     "action_channel": "",
                     "action_target": "",
+                    "action_severities": "",
                     "is_shared_action": "",
                     "shared_action_id": "",
+                    "raw_action_json": "",
                 }
             )
             continue
@@ -221,8 +258,10 @@ def export_monitors_with_actions(csv_path):
         "action_type",
         "action_channel",
         "action_target",
+        "action_severities",
         "is_shared_action",
         "shared_action_id",
+        "raw_action_json",
     ]
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
