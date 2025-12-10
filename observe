@@ -7,14 +7,14 @@ import json
 # ---------------------------------------------------------
 
 # Exact host from Observe UI (no trailing slash)
-# e.g. "https://163140281121.cap1.observeinc.com"
+# Example: "https://163140281121.cap1.observeinc.com"
 OBSERVE_BASE_URL = "https://163140281121.cap1.observeinc.com"
 
 OBSV_USER_EMAIL = "service-account@your-company.com"
 OBSV_USER_PASSWORD = "YOUR_PASSWORD"
 TOKEN_NAME = "api-monitor-export"
 
-CSV_OUTPUT = "observe_monitors_with_actions.csv"
+CSV_OUTPUT = "observe_monitors_actions.csv"
 
 
 # ---------------- LOGIN ----------------
@@ -22,7 +22,7 @@ CSV_OUTPUT = "observe_monitors_with_actions.csv"
 def login_and_get_auth():
     """
     Call /v1/login and return (customer_id, access_key).
-    Matches response you showed:
+    Matches the response you've shown:
       {"ok": true, "access_key": "...", "customer_id": 1631402...}
     """
     url = f"{OBSERVE_BASE_URL}/v1/login"
@@ -34,11 +34,12 @@ def login_and_get_auth():
 
     resp = requests.post(url, json=payload, timeout=30)
     if resp.status_code != 200:
-        raise Exception(f"Login failed ({resp.status_code}): {resp.text}")
+        raise Exception(f"Login failed: {resp.status_code} → {resp.text}")
 
     data = resp.json()
     access_key = data.get("access_key")
     customer_id = data.get("customer_id")
+
     if not access_key or not customer_id:
         raise Exception(f"Login succeeded but access_key/customer_id missing: {data}")
 
@@ -61,23 +62,20 @@ def fetch_all_monitors(customer_id, access_key):
     url = f"{OBSERVE_BASE_URL}/v1/monitors"
     resp = requests.get(url, headers=headers, timeout=30)
 
-    if resp.status_code == 401:
-        raise Exception("❌ 401 Unauthorized from /v1/monitors – check Authorization header.")
-    if resp.status_code == 403:
-        raise Exception("❌ 403 Forbidden – service account lacks monitor permissions.")
     if resp.status_code != 200:
-        raise Exception(f"❌ API error {resp.status_code}: {resp.text}")
+        raise Exception(f"/v1/monitors failed: {resp.status_code} → {resp.text}")
 
     data = resp.json()
     if isinstance(data, list):
         return data
     elif isinstance(data, dict):
+        # just in case your tenant wraps it
         return data.get("data") or data.get("monitors") or []
     else:
         raise Exception(f"Unexpected /v1/monitors JSON type: {type(data)}")
 
 
-# --------- BASIC MONITOR FIELDS ---------
+# --------- EXTRACT FIELDS FROM MONITOR ---------
 
 def get_monitor_id(m):
     return str(m.get("id") or m.get("monitor_id") or m.get("_id") or "")
@@ -104,111 +102,66 @@ def get_monitor_status(m):
     return ""
 
 
-# --------- ACTION / SHARED-ACTION HELPERS ---------
+# --------- INLINE PAGERDUTY ACTIONS ---------
 
-def extract_actions(m):
+def extract_monitor_actions(m):
     """
-    Locate the list of actions on the monitor.
+    Your tenant puts PagerDuty payloads directly under one of:
+      - notification_actions
+      - actions
+      - notifications
+    Each element is already the PD JSON (dedup_key, payload, routing_key, client, client_url, ...).
     """
-    for key in (
-        "notification_actions",
-        "notificationActions",
-        "actions",
-        "notifications",
-    ):
-        v = m.get(key)
-        if isinstance(v, list):
-            return v
-
-    # fallback – single object
-    for key in ("action", "notification_action"):
-        v = m.get(key)
-        if isinstance(v, dict):
-            return [v]
-
+    for key in ("notification_actions", "actions", "notifications"):
+        if key in m and isinstance(m[key], list):
+            return m[key]
     return []
 
 
-def detect_action_type(act):
+def summarize_inline_pd_action(act):
     """
-    Best-effort classification of action type.
+    Summarize a single inline PagerDuty action, based on your sample JSON:
+      {
+        "routing_key": "...",
+        "client": "Observe Alert Link",
+        "client_url": "https://...",
+        "payload": {
+          "summary": "...",
+          "severity": "error",
+          "timestamp": "...",
+          ...
+        },
+        ...
+      }
     """
-    if "routing_key" in act:
-        return "pagerduty"
-    if "email" in act or "address" in act:
-        return "email"
-    if "url" in act or "endpoint" in act:
-        return "webhook"
-    if "channel" in act and "slack" in str(act.get("channel", "")).lower():
-        return "slack"
-    return "unknown"
+    payload = act.get("payload", {}) if isinstance(act.get("payload"), dict) else {}
 
-
-def summarize_action(act):
-    """
-    Summarize a single action object based on your sample JSON
-    (PagerDuty) and generic patterns for other types.
-    """
-
-    action_type = detect_action_type(act)
-
-    # Common fields for all types
     routing_key = act.get("routing_key", "")
     client = act.get("client", "")
     client_url = act.get("client_url", "")
 
-    # PD-style payload (from your sample)
-    payload = act.get("payload", {}) if isinstance(act.get("payload"), dict) else {}
     summary = payload.get("summary", "")
     severity = payload.get("severity", "")
     timestamp = payload.get("timestamp", "")
 
-    # For email/webhook/etc, try fallback keys
-    if action_type == "email":
-        if not summary:
-            summary = act.get("subject", "")
-        if not client:
-            client = act.get("from", "") or act.get("sender", "")
-        if not client_url:
-            client_url = act.get("reply_to", "")
-
-    if action_type == "webhook":
-        if not client_url:
-            client_url = act.get("url", "") or act.get("endpoint", "")
-
-    # shared-action hints
-    shared_action_id = (
-        act.get("shared_action_id")
-        or act.get("sharedActionId")
-        or act.get("shared_action_uuid")
-        or ""
-    )
-    is_shared = "yes" if shared_action_id else "no"
-
     return {
-        "action_type": action_type,
         "routing_key": routing_key,
         "client": client,
         "client_url": client_url,
         "summary": summary,
         "severity": severity,
         "timestamp": timestamp,
-        "is_shared_action": is_shared,
-        "shared_action_id": shared_action_id,
         "raw_action_json": json.dumps(act),
     }
 
 
 # ------------- MAIN EXPORT -------------
 
-def export_monitors_with_actions(csv_path):
+def export_monitors(csv_path):
     customer_id, access_key = login_and_get_auth()
-
     monitors = fetch_all_monitors(customer_id, access_key)
-    print(f"Fetched {len(monitors)} monitors")
 
-    # If you want to inspect raw monitor JSON once:
-    # print(json.dumps(monitors[0], indent=2))
+    print(f"Fetched {len(monitors)} monitors")
 
     rows = []
 
@@ -218,65 +171,55 @@ def export_monitors_with_actions(csv_path):
         created_by = get_monitor_created_by(m)
         status = get_monitor_status(m)
 
-        actions = extract_actions(m)
+        actions = extract_monitor_actions(m)
 
         if not actions:
-            rows.append(
-                {
-                    "monitor_id": mid,
-                    "monitor_name": name,
-                    "created_by": created_by,
-                    "status": status,
-                    "action_type": "",
-                    "routing_key": "",
-                    "client": "",
-                    "client_url": "",
-                    "summary": "",
-                    "severity": "",
-                    "timestamp": "",
-                    "is_shared_action": "",
-                    "shared_action_id": "",
-                    "raw_action_json": "",
-                }
-            )
+            rows.append({
+                "monitor_id": mid,
+                "monitor_name": name,
+                "created_by": created_by,
+                "status": status,
+                "routing_key": "",
+                "client": "",
+                "client_url": "",
+                "summary": "",
+                "severity": "",
+                "timestamp": "",
+                "raw_action_json": "",
+            })
             continue
 
         for act in actions:
-            a = summarize_action(act)
-            rows.append(
-                {
-                    "monitor_id": mid,
-                    "monitor_name": name,
-                    "created_by": created_by,
-                    "status": status,
-                    **a,
-                }
-            )
+            pd = summarize_inline_pd_action(act)
+            rows.append({
+                "monitor_id": mid,
+                "monitor_name": name,
+                "created_by": created_by,
+                "status": status,
+                **pd,
+            })
 
     fieldnames = [
         "monitor_id",
         "monitor_name",
         "created_by",
         "status",
-        "action_type",
         "routing_key",
         "client",
         "client_url",
         "summary",
         "severity",
         "timestamp",
-        "is_shared_action",
-        "shared_action_id",
         "raw_action_json",
     ]
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
-    print(f"✅ Wrote {len(rows)} rows to {csv_path}")
+    print(f"✅ CSV written → {csv_path}")
 
 
 if __name__ == "__main__":
-    export_monitors_with_actions(CSV_OUTPUT)
+    export_monitors(CSV_OUTPUT)
