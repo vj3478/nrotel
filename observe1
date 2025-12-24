@@ -1,319 +1,259 @@
 #!/usr/bin/env python3
 """
-observe_export_monitors_actions.py
+observe_export_all.py
 
 Exports:
-  - All monitors (full details)
-  - All shared actions (full details)
+  - All Monitors (full details)
+  - All Shared Actions (full details)
 
 Outputs:
   - monitors.csv
   - shared_actions.csv
-
-SSL:
-  --ca-bundle /path/to/corp-root.pem
-  OR export REQUESTS_CA_BUNDLE=/path/to/corp-root.pem
 """
 
-from __future__ import annotations
-
-import argparse
+import os
+import sys
 import csv
 import json
-import sys
 import time
-from dataclasses import dataclass
+import argparse
 from typing import Any, Dict, List, Optional
-
 import requests
 
+# ============================================================
+# 🔹 REQUIRED CONFIGURATION (can be overridden by ENV / CLI)
+# ============================================================
 
-# -----------------------------
-# Generic helpers
-# -----------------------------
-def eprint(*args: Any) -> None:
+# ---- Base / Auth ----
+DEFAULT_BASE_URL = os.getenv("OBSERVE_BASE_URL", "")
+DEFAULT_USERNAME = os.getenv("OBSERVE_USERNAME", "")
+DEFAULT_PASSWORD = os.getenv("OBSERVE_PASSWORD", "")
+
+# ---- Output ----
+DEFAULT_OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
+DEFAULT_MONITORS_CSV = "monitors.csv"
+DEFAULT_SHARED_ACTIONS_CSV = "shared_actions.csv"
+
+# ---- SSL ----
+DEFAULT_CA_BUNDLE = os.getenv("REQUESTS_CA_BUNDLE")  # path to PEM
+DEFAULT_INSECURE = False  # DO NOT set True in prod
+
+# ---- API Endpoints ----
+LOGIN_PATH = "/v1/login"
+
+LIST_MONITORS_PATH = "/v1/monitors"
+GET_MONITOR_PATH = "/v1/monitors/{id}"
+
+LIST_SHARED_ACTIONS_PATH = "/v1/shared_actions"
+GET_SHARED_ACTION_PATH = "/v1/shared_actions/{id}"
+
+# ---- General Behavior ----
+HTTP_TIMEOUT = 30
+FLATTEN_MAX_DEPTH = 6
+DETAIL_CALL_SLEEP_SECONDS = 0.0
+
+# ---- ID candidates (API inconsistencies handled here) ----
+MONITOR_ID_KEYS = ["id", "monitorId", "uuid", "guid", "slug"]
+SHARED_ACTION_ID_KEYS = ["id", "actionId", "sharedActionId", "uuid", "guid"]
+
+# ============================================================
+# 🔹 Utility helpers
+# ============================================================
+
+def eprint(*args):
     print(*args, file=sys.stderr)
 
 
-def safe_json_dumps(obj: Any) -> str:
+def safe_json(obj) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, default=str)
     except Exception:
-        return json.dumps({"_non_serializable": str(obj)}, ensure_ascii=False)
+        return json.dumps({"_error": "non-serializable"})
 
 
-def flatten_json(
-    obj: Any,
-    parent_key: str = "",
-    sep: str = ".",
-    max_depth: int = 6,
-    _depth: int = 0,
-) -> Dict[str, Any]:
-    """
-    Flattens nested dicts. Lists are serialized as JSON strings.
-    """
-    out: Dict[str, Any] = {}
-    if _depth > max_depth:
-        out[parent_key or "value"] = safe_json_dumps(obj)
-        return out
+def flatten_json(obj, parent="", sep=".", depth=0, max_depth=FLATTEN_MAX_DEPTH):
+    flat = {}
+    if depth > max_depth:
+        flat[parent] = safe_json(obj)
+        return flat
 
     if isinstance(obj, dict):
         for k, v in obj.items():
-            key = f"{parent_key}{sep}{k}" if parent_key else str(k)
-            out.update(flatten_json(v, key, sep, max_depth, _depth + 1))
+            key = f"{parent}{sep}{k}" if parent else k
+            flat.update(flatten_json(v, key, sep, depth + 1))
     elif isinstance(obj, list):
-        out[parent_key or "value"] = safe_json_dumps(obj)
+        flat[parent] = safe_json(obj)
     else:
-        out[parent_key or "value"] = obj
-    return out
+        flat[parent] = obj
+
+    return flat
 
 
-def write_csv_dynamic(rows: List[Dict[str, Any]], out_path: str) -> None:
-    """
-    Dynamic CSV columns: union of all keys in rows (stable first-seen order).
-    """
-    fieldnames: List[str] = []
-    seen = set()
-    for r in rows:
-        for k in r.keys():
-            if k not in seen:
-                seen.add(k)
-                fieldnames.append(k)
-
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
-
-
-def build_verify_arg(ca_bundle: Optional[str], insecure: bool) -> Any:
-    if insecure:
-        return False
-    if ca_bundle:
-        return ca_bundle
-    return True
-
-
-def pick_id(obj: Dict[str, Any], candidates: List[str]) -> Optional[str]:
-    for k in candidates:
+def pick_id(obj: Dict[str, Any], keys: List[str]) -> Optional[str]:
+    for k in keys:
         v = obj.get(k)
-        if v is None:
-            continue
-        s = str(v)
-        if s and s != "None":
-            return s
+        if v:
+            return str(v)
     return None
 
 
-# -----------------------------
-# Client
-# -----------------------------
-@dataclass
-class ClientConfig:
-    base_url: str
-    username: str
-    password: str
-    verify: Any
-    timeout: int = 30
+def write_csv(rows: List[Dict[str, Any]], path: str):
+    keys = []
+    seen = set()
+    for r in rows:
+        for k in r:
+            if k not in seen:
+                seen.add(k)
+                keys.append(k)
 
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+# ============================================================
+# 🔹 Client
+# ============================================================
 
 class ObserveClient:
-    """
-    Update only these if your tenant differs:
-      LIST_MONITORS_PATH
-      GET_MONITOR_PATH
-      LIST_SHARED_ACTIONS_PATH
-      GET_SHARED_ACTION_PATH
-      LOGIN_PATH
-    """
+    def __init__(self, base_url, username, password, verify):
+        self.base_url = base_url.rstrip("/")
+        self.verify = verify
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "observe-export/2.0",
+        })
+        self._login(username, password)
 
-    LOGIN_PATH = "/v1/login"
-
-    # Monitors
-    LIST_MONITORS_PATH = "/v1/monitors"
-    GET_MONITOR_PATH = "/v1/monitors/{id}"
-
-    # Shared Actions (name varies by API; adjust if needed)
-    LIST_SHARED_ACTIONS_PATH = "/v1/shared_actions"
-    GET_SHARED_ACTION_PATH = "/v1/shared_actions/{id}"
-
-    def __init__(self, cfg: ClientConfig):
-        self.cfg = cfg
-        self.sess = requests.Session()
-        self.sess.headers.update(
-            {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "observe-export/1.1",
-            }
+    def _login(self, username, password):
+        r = self.session.post(
+            self.base_url + LOGIN_PATH,
+            json={"username": username, "password": password},
+            timeout=HTTP_TIMEOUT,
+            verify=self.verify,
         )
-        self.token: Optional[str] = None
-
-    def login(self) -> str:
-        url = f"{self.cfg.base_url.rstrip('/')}{self.LOGIN_PATH}"
-        payload = {"username": self.cfg.username, "password": self.cfg.password}
-        r = self.sess.post(url, json=payload, timeout=self.cfg.timeout, verify=self.cfg.verify)
         r.raise_for_status()
-        data = r.json()
-
-        token = data.get("token") or data.get("accessToken") or data.get("access_token")
+        token = r.json().get("token")
         if not token:
-            raise RuntimeError(f"Login succeeded but token not found. Keys: {list(data.keys())}")
+            raise RuntimeError("Login succeeded but token missing")
+        self.session.headers["Authorization"] = f"Bearer {token}"
 
-        self.token = token
-        self.sess.headers["Authorization"] = f"Bearer {token}"
-        return token
-
-    def _get_json(self, path: str) -> Any:
-        url = f"{self.cfg.base_url.rstrip('/')}{path}"
-        r = self.sess.get(url, timeout=self.cfg.timeout, verify=self.cfg.verify)
+    def get(self, path):
+        r = self.session.get(
+            self.base_url + path,
+            timeout=HTTP_TIMEOUT,
+            verify=self.verify,
+        )
         r.raise_for_status()
         return r.json()
 
-    def list_monitors(self) -> List[Dict[str, Any]]:
-        data = self._get_json(self.LIST_MONITORS_PATH)
-        items = data.get("items") or data.get("data") or data
-        if not isinstance(items, list):
-            raise RuntimeError(f"Unexpected monitors list response shape. Keys: {list(data.keys())}")
-        return items
 
-    def get_monitor(self, monitor_id: str) -> Dict[str, Any]:
-        return self._get_json(self.GET_MONITOR_PATH.format(id=monitor_id))
+# ============================================================
+# 🔹 Export logic
+# ============================================================
 
-    def list_shared_actions(self) -> List[Dict[str, Any]]:
-        data = self._get_json(self.LIST_SHARED_ACTIONS_PATH)
-        items = data.get("items") or data.get("data") or data
-        if not isinstance(items, list):
-            raise RuntimeError(f"Unexpected shared actions list response shape. Keys: {list(data.keys())}")
-        return items
-
-    def get_shared_action(self, action_id: str) -> Dict[str, Any]:
-        return self._get_json(self.GET_SHARED_ACTION_PATH.format(id=action_id))
-
-
-# -----------------------------
-# Export logic (list -> details)
-# -----------------------------
-def export_with_details(
-    *,
+def export_entity(
+    client: ObserveClient,
+    list_path: str,
+    detail_path: str,
+    id_keys: List[str],
     label: str,
-    list_items: List[Dict[str, Any]],
-    id_candidates: List[str],
-    fetch_detail_fn,
-    flatten_depth: int,
-    sleep_s: float,
 ) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
 
-    for idx, item in enumerate(list_items, start=1):
-        # Always keep list response too (sometimes list has fields detail doesn't)
-        base = flatten_json(item, max_depth=flatten_depth)
-        base["__source"] = "list"
-        base["raw_json_list"] = safe_json_dumps(item)
+    data = client.get(list_path)
+    items = data.get("items") or data.get("data") or data
 
-        item_id = pick_id(item, id_candidates)
-        if not item_id:
-            base["details_error"] = f"Missing id. Tried: {id_candidates}"
+    rows = []
+
+    for idx, item in enumerate(items, 1):
+        base = flatten_json(item)
+        base["raw_json_list"] = safe_json(item)
+
+        entity_id = pick_id(item, id_keys)
+        if not entity_id:
+            base["details_error"] = "ID not found"
             rows.append(base)
             continue
 
         try:
-            detail = fetch_detail_fn(item_id)
-            flat_detail = flatten_json(detail, max_depth=flatten_depth)
-
-            merged = {**base, **flat_detail}
-            merged["__source"] = "detail"
-            merged["id"] = item_id  # normalize
-            merged["raw_json"] = safe_json_dumps(detail)
-
-            # If you want a single raw_json, keep detail as raw_json and list as raw_json_list
-            rows.append(merged)
-        except Exception as ex:
-            base["id"] = item_id
-            base["details_error"] = str(ex)
+            detail = client.get(detail_path.format(id=entity_id))
+            flat = flatten_json(detail)
+            row = {**base, **flat}
+            row["id"] = entity_id
+            row["raw_json"] = safe_json(detail)
+            rows.append(row)
+        except Exception as e:
+            base["details_error"] = str(e)
             rows.append(base)
 
-        if sleep_s > 0:
-            time.sleep(sleep_s)
-
         if idx % 25 == 0:
-            eprint(f"{label}: processed {idx}/{len(list_items)}")
+            eprint(f"{label}: {idx}/{len(items)} processed")
+
+        if DETAIL_CALL_SLEEP_SECONDS:
+            time.sleep(DETAIL_CALL_SLEEP_SECONDS)
 
     return rows
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", required=True, help="e.g. https://163123...abc1.observeinc.com")
-    ap.add_argument("--username", required=True)
-    ap.add_argument("--password", required=True)
+# ============================================================
+# 🔹 Main
+# ============================================================
 
-    ap.add_argument("--out-dir", default=".", help="Output directory")
-    ap.add_argument("--monitors-csv", default="monitors.csv")
-    ap.add_argument("--shared-actions-csv", default="shared_actions.csv")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--username", default=DEFAULT_USERNAME)
+    parser.add_argument("--password", default=DEFAULT_PASSWORD)
+    parser.add_argument("--out-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--ca-bundle", default=DEFAULT_CA_BUNDLE)
+    parser.add_argument("--insecure", action="store_true")
+    args = parser.parse_args()
 
-    ap.add_argument("--ca-bundle", default=None, help="Path to corporate/root CA PEM")
-    ap.add_argument("--insecure", action="store_true", help="Disable SSL verify (debug only!)")
+    if not all([args.base_url, args.username, args.password]):
+        raise SystemExit("❌ base-url, username, password are required")
 
-    ap.add_argument("--flatten-max-depth", type=int, default=6)
-    ap.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds between detail calls")
-    args = ap.parse_args()
-
-    verify = build_verify_arg(args.ca_bundle, args.insecure)
+    verify = False if args.insecure else (args.ca_bundle or True)
 
     client = ObserveClient(
-        ClientConfig(
-            base_url=args.base_url,
-            username=args.username,
-            password=args.password,
-            verify=verify,
-            timeout=30,
-        )
+        args.base_url,
+        args.username,
+        args.password,
+        verify,
     )
 
-    eprint("Logging in...")
-    client.login()
-
-    # ---------------- Monitors ----------------
-    eprint("Listing monitors...")
-    monitors = client.list_monitors()
-    eprint(f"Monitors found: {len(monitors)}")
-
-    monitor_rows = export_with_details(
-        label="Monitors",
-        list_items=monitors,
-        id_candidates=["id", "monitorId", "uuid", "guid", "slug"],
-        fetch_detail_fn=client.get_monitor,
-        flatten_depth=args.flatten_max_depth,
-        sleep_s=args.sleep,
+    # ---- Monitors ----
+    monitors = export_entity(
+        client,
+        LIST_MONITORS_PATH,
+        GET_MONITOR_PATH,
+        MONITOR_ID_KEYS,
+        "Monitors",
     )
 
-    monitors_out = f"{args.out_dir.rstrip('/')}/{args.monitors_csv}"
-    eprint(f"Writing monitors CSV -> {monitors_out}")
-    write_csv_dynamic(monitor_rows, monitors_out)
-
-    # ------------- Shared Actions -------------
-    eprint("Listing shared actions...")
-    shared_actions = client.list_shared_actions()
-    eprint(f"Shared actions found: {len(shared_actions)}")
-
-    shared_action_rows = export_with_details(
-        label="SharedActions",
-        list_items=shared_actions,
-        id_candidates=["id", "actionId", "sharedActionId", "uuid", "guid", "slug"],
-        fetch_detail_fn=client.get_shared_action,
-        flatten_depth=args.flatten_max_depth,
-        sleep_s=args.sleep,
+    write_csv(
+        monitors,
+        os.path.join(args.out_dir, DEFAULT_MONITORS_CSV),
     )
 
-    shared_actions_out = f"{args.out_dir.rstrip('/')}/{args.shared_actions_csv}"
-    eprint(f"Writing shared actions CSV -> {shared_actions_out}")
-    write_csv_dynamic(shared_action_rows, shared_actions_out)
+    # ---- Shared Actions ----
+    actions = export_entity(
+        client,
+        LIST_SHARED_ACTIONS_PATH,
+        GET_SHARED_ACTION_PATH,
+        SHARED_ACTION_ID_KEYS,
+        "SharedActions",
+    )
 
-    eprint("Done.")
-    return 0
+    write_csv(
+        actions,
+        os.path.join(args.out_dir, DEFAULT_SHARED_ACTIONS_CSV),
+    )
+
+    eprint("✅ Export completed")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
