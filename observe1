@@ -1,258 +1,229 @@
 #!/usr/bin/env python3
-"""
-observe_export_all.py
-
-Exports:
-  - All Monitors (full details)
-  - All Shared Actions (full details)
-
-Outputs:
-  - monitors.csv
-  - shared_actions.csv
-"""
-
+import argparse
+import json
 import os
 import sys
-import csv
-import json
-import time
-import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
 import requests
-
-# ============================================================
-# 🔹 REQUIRED CONFIGURATION (can be overridden by ENV / CLI)
-# ============================================================
-
-# ---- Base / Auth ----
-DEFAULT_BASE_URL = os.getenv("OBSERVE_BASE_URL", "")
-DEFAULT_USERNAME = os.getenv("OBSERVE_USERNAME", "")
-DEFAULT_PASSWORD = os.getenv("OBSERVE_PASSWORD", "")
-
-# ---- Output ----
-DEFAULT_OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
-DEFAULT_MONITORS_CSV = "monitors.csv"
-DEFAULT_SHARED_ACTIONS_CSV = "shared_actions.csv"
-
-# ---- SSL ----
-DEFAULT_CA_BUNDLE = os.getenv("REQUESTS_CA_BUNDLE")  # path to PEM
-DEFAULT_INSECURE = False  # DO NOT set True in prod
-
-# ---- API Endpoints ----
-LOGIN_PATH = "/v1/login"
-
-LIST_MONITORS_PATH = "/v1/monitors"
-GET_MONITOR_PATH = "/v1/monitors/{id}"
-
-LIST_SHARED_ACTIONS_PATH = "/v1/shared_actions"
-GET_SHARED_ACTION_PATH = "/v1/shared_actions/{id}"
-
-# ---- General Behavior ----
-HTTP_TIMEOUT = 30
-FLATTEN_MAX_DEPTH = 6
-DETAIL_CALL_SLEEP_SECONDS = 0.0
-
-# ---- ID candidates (API inconsistencies handled here) ----
-MONITOR_ID_KEYS = ["id", "monitorId", "uuid", "guid", "slug"]
-SHARED_ACTION_ID_KEYS = ["id", "actionId", "sharedActionId", "uuid", "guid"]
-
-# ============================================================
-# 🔹 Utility helpers
-# ============================================================
-
-def eprint(*args):
-    print(*args, file=sys.stderr)
+import urllib3
 
 
-def safe_json(obj) -> str:
-    try:
-        return json.dumps(obj, ensure_ascii=False, default=str)
-    except Exception:
-        return json.dumps({"_error": "non-serializable"})
+DEFAULT_OUTPUT_DIR = "."
+DEFAULT_CA_BUNDLE = None
 
-
-def flatten_json(obj, parent="", sep=".", depth=0, max_depth=FLATTEN_MAX_DEPTH):
-    flat = {}
-    if depth > max_depth:
-        flat[parent] = safe_json(obj)
-        return flat
-
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            key = f"{parent}{sep}{k}" if parent else k
-            flat.update(flatten_json(v, key, sep, depth + 1))
-    elif isinstance(obj, list):
-        flat[parent] = safe_json(obj)
-    else:
-        flat[parent] = obj
-
-    return flat
-
-
-def pick_id(obj: Dict[str, Any], keys: List[str]) -> Optional[str]:
-    for k in keys:
-        v = obj.get(k)
-        if v:
-            return str(v)
-    return None
-
-
-def write_csv(rows: List[Dict[str, Any]], path: str):
-    keys = []
-    seen = set()
-    for r in rows:
-        for k in r:
-            if k not in seen:
-                seen.add(k)
-                keys.append(k)
-
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-# ============================================================
-# 🔹 Client
-# ============================================================
 
 class ObserveClient:
-    def __init__(self, base_url, username, password, verify):
+    """
+    Minimal Observe client:
+      - login (session cookie based) OR token header (if you switch it)
+      - request wrapper with verify handling
+      - example functions: list_monitors, list_shared_actions
+    """
+
+    def __init__(self, base_url: str, username: str, password: str, verify: Any, timeout: int = 30):
         self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
         self.verify = verify
+        self.timeout = timeout
+
         self.session = requests.Session()
+        self.session.verify = verify
+
+        # Helpful defaults
         self.session.headers.update({
             "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "observe-export/2.0",
         })
-        self._login(username, password)
 
-    def _login(self, username, password):
-        r = self.session.post(
-            self.base_url + LOGIN_PATH,
-            json={"username": username, "password": password},
-            timeout=HTTP_TIMEOUT,
-            verify=self.verify,
+        print(f"[INFO] Base URL      = {self.base_url}")
+        print(f"[INFO] SSL verify   = {self.verify}")
+
+        self._login()
+
+    def _url(self, path: str) -> str:
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{self.base_url}{path}"
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        allow_404: bool = False,
+        debug: bool = False,
+    ) -> requests.Response:
+        url = self._url(path)
+
+        req_headers = {}
+        if headers:
+            req_headers.update(headers)
+
+        if debug:
+            print(f"[DEBUG] {method} {url}")
+            if params:
+                print(f"[DEBUG] params: {params}")
+            if json_body:
+                print(f"[DEBUG] json keys: {list(json_body.keys())}")
+
+        resp = self.session.request(
+            method=method.upper(),
+            url=url,
+            params=params,
+            json=json_body,
+            headers=req_headers if req_headers else None,
+            timeout=self.timeout,
         )
-        r.raise_for_status()
-        token = r.json().get("token")
-        if not token:
-            raise RuntimeError("Login succeeded but token missing")
-        self.session.headers["Authorization"] = f"Bearer {token}"
 
-    def get(self, path):
-        r = self.session.get(
-            self.base_url + path,
-            timeout=HTTP_TIMEOUT,
-            verify=self.verify,
-        )
-        r.raise_for_status()
-        return r.json()
+        if allow_404 and resp.status_code == 404:
+            return resp
+
+        if not resp.ok:
+            # Print body for fast debugging (400/401/403/etc)
+            print(f"[ERROR] HTTP {resp.status_code} calling {method} {url}")
+            ct = resp.headers.get("Content-Type", "")
+            if "application/json" in ct:
+                try:
+                    print(json.dumps(resp.json(), indent=2))
+                except Exception:
+                    print(resp.text)
+            else:
+                print(resp.text)
+            resp.raise_for_status()
+
+        return resp
+
+    def _login(self) -> None:
+        """
+        Your screenshot shows /v1/login. Many Observe tenants use cookie-based sessions.
+        If your API returns a token instead, we can store it and attach Authorization header.
+        """
+        path = "/v1/login"
+
+        payload = {
+            "username": self.username,
+            "password": self.password,
+        }
+
+        headers = {"Content-Type": "application/json"}
+
+        resp = self._request("POST", path, json_body=payload, headers=headers)
+
+        # If login returns JSON with token, you can enable this:
+        # data = resp.json()
+        # token = data.get("accessToken") or data.get("token")
+        # if token:
+        #     self.session.headers.update({"Authorization": f"Bearer {token}"})
+
+        print("[SUCCESS] Login OK")
+
+    # ----------------------------
+    # Example “other functions”
+    # ----------------------------
+
+    def list_monitors(self) -> Dict[str, Any]:
+        """
+        Update endpoint if your repo uses a different one.
+        """
+        # Common patterns might be:
+        #   /v1/monitors
+        #   /v1/monitor
+        #   /v1/alerts/monitors
+        path = "/v1/monitors"
+        resp = self._request("GET", path)
+        return resp.json()
+
+    def list_shared_actions(self) -> Dict[str, Any]:
+        """
+        Update endpoint if needed.
+        """
+        # Common patterns might be:
+        #   /v1/sharedActions
+        #   /v1/shared-actions
+        #   /v1/actions/shared
+        path = "/v1/sharedActions"
+        resp = self._request("GET", path)
+        return resp.json()
+
+    def get_monitor_details(self, monitor_id: str) -> Dict[str, Any]:
+        """
+        If your API has a per-monitor endpoint, call it here.
+        """
+        path = f"/v1/monitors/{monitor_id}"
+        resp = self._request("GET", path, allow_404=False)
+        return resp.json()
 
 
-# ============================================================
-# 🔹 Export logic
-# ============================================================
+def write_json(out_dir: str, name: str, data: Any) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+    p = os.path.join(out_dir, name)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return p
 
-def export_entity(
-    client: ObserveClient,
-    list_path: str,
-    detail_path: str,
-    id_keys: List[str],
-    label: str,
-) -> List[Dict[str, Any]]:
-
-    data = client.get(list_path)
-    items = data.get("items") or data.get("data") or data
-
-    rows = []
-
-    for idx, item in enumerate(items, 1):
-        base = flatten_json(item)
-        base["raw_json_list"] = safe_json(item)
-
-        entity_id = pick_id(item, id_keys)
-        if not entity_id:
-            base["details_error"] = "ID not found"
-            rows.append(base)
-            continue
-
-        try:
-            detail = client.get(detail_path.format(id=entity_id))
-            flat = flatten_json(detail)
-            row = {**base, **flat}
-            row["id"] = entity_id
-            row["raw_json"] = safe_json(detail)
-            rows.append(row)
-        except Exception as e:
-            base["details_error"] = str(e)
-            rows.append(base)
-
-        if idx % 25 == 0:
-            eprint(f"{label}: {idx}/{len(items)} processed")
-
-        if DETAIL_CALL_SLEEP_SECONDS:
-            time.sleep(DETAIL_CALL_SLEEP_SECONDS)
-
-    return rows
-
-
-# ============================================================
-# 🔹 Main
-# ============================================================
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--username", default=DEFAULT_USERNAME)
-    parser.add_argument("--password", default=DEFAULT_PASSWORD)
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--username", required=True)
+    parser.add_argument("--password", required=True)
+
     parser.add_argument("--out-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--ca-bundle", default=DEFAULT_CA_BUNDLE)
     parser.add_argument("--insecure", action="store_true")
+
+    # Actions
+    parser.add_argument("--export-monitors", action="store_true")
+    parser.add_argument("--export-shared-actions", action="store_true")
+    parser.add_argument("--monitor-id", help="Fetch details for a single monitor by id")
+
     args = parser.parse_args()
 
-    if not all([args.base_url, args.username, args.password]):
-        raise SystemExit("❌ base-url, username, password are required")
-
-    verify = False if args.insecure else (args.ca_bundle or True)
+    # SSL verify logic (explicit + predictable)
+    if args.insecure:
+        verify = False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    elif args.ca_bundle:
+        verify = args.ca_bundle
+    else:
+        verify = True
 
     client = ObserveClient(
-        args.base_url,
-        args.username,
-        args.password,
-        verify,
+        base_url=args.base_url,
+        username=args.username,
+        password=args.password,
+        verify=verify,
     )
 
-    # ---- Monitors ----
-    monitors = export_entity(
-        client,
-        LIST_MONITORS_PATH,
-        GET_MONITOR_PATH,
-        MONITOR_ID_KEYS,
-        "Monitors",
-    )
+    did_anything = False
 
-    write_csv(
-        monitors,
-        os.path.join(args.out_dir, DEFAULT_MONITORS_CSV),
-    )
+    if args.export_monitors:
+        did_anything = True
+        monitors = client.list_monitors()
+        out = write_json(args.out_dir, "monitors.json", monitors)
+        print(f"[OK] Wrote {out}")
 
-    # ---- Shared Actions ----
-    actions = export_entity(
-        client,
-        LIST_SHARED_ACTIONS_PATH,
-        GET_SHARED_ACTION_PATH,
-        SHARED_ACTION_ID_KEYS,
-        "SharedActions",
-    )
+    if args.export_shared_actions:
+        did_anything = True
+        shared = client.list_shared_actions()
+        out = write_json(args.out_dir, "shared_actions.json", shared)
+        print(f"[OK] Wrote {out}")
 
-    write_csv(
-        actions,
-        os.path.join(args.out_dir, DEFAULT_SHARED_ACTIONS_CSV),
-    )
+    if args.monitor_id:
+        did_anything = True
+        details = client.get_monitor_details(args.monitor_id)
+        out = write_json(args.out_dir, f"monitor_{args.monitor_id}.json", details)
+        print(f"[OK] Wrote {out}")
 
-    eprint("✅ Export completed")
+    if not did_anything:
+        print("\nNothing selected. Try one of:")
+        print("  --export-monitors")
+        print("  --export-shared-actions")
+        print("  --monitor-id <id>\n")
 
 
 if __name__ == "__main__":
