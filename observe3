@@ -1,0 +1,303 @@
+import csv
+import json
+import time
+import requests
+from typing import Any, Dict, List, Optional
+
+# ---------------------------------------------------------
+# CONFIG – UPDATE THESE
+# ---------------------------------------------------------
+OBSERVE_BASE_URL = "https://163140281121.cap1.observeinc.com"
+
+OBSV_USER_EMAIL = "service-account@your-company.com"
+OBSV_USER_PASSWORD = "YOUR_PASSWORD"
+TOKEN_NAME = "api-monitor-export"
+
+CSV_OUTPUT = "observe_monitors_full.csv"
+
+# Safety: if there are many monitors, reduce load on API
+DETAIL_CALL_SLEEP_SECONDS = 0.05  # 0.0 to disable
+
+
+# ---------------- LOGIN ----------------
+def login_and_get_auth():
+    """
+    Call /v1/login and return (customer_id, access_key).
+    Response shape:
+      {"ok": true, "access_key": "...", "customer_id": 1631402...}
+    """
+    url = f"{OBSERVE_BASE_URL}/v1/login"
+    payload = {
+        "user_email": OBSV_USER_EMAIL,
+        "user_password": OBSV_USER_PASSWORD,
+        "tokenName": TOKEN_NAME,
+    }
+
+    resp = requests.post(url, json=payload, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"Login failed: {resp.status_code} → {resp.text}")
+
+    data = resp.json()
+    access_key = data.get("access_key")
+    customer_id = data.get("customer_id")
+
+    if not access_key or not customer_id:
+        raise Exception(f"Login succeeded but access_key/customer_id missing: {data}")
+
+    print("✅ Login successful")
+    return str(customer_id), access_key
+
+
+def auth_headers(customer_id: str, access_key: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {customer_id} {access_key}",
+        "Content-Type": "application/json",
+    }
+
+
+# ------------- FETCH MONITORS (LIST) -------------
+def fetch_all_monitors(customer_id: str, access_key: str) -> List[Dict[str, Any]]:
+    """
+    Fetch all monitors from /v1/monitors.
+    In many tenants /v1/monitors returns a top-level list.
+    """
+    url = f"{OBSERVE_BASE_URL}/v1/monitors"
+    resp = requests.get(url, headers=auth_headers(customer_id, access_key), timeout=30)
+
+    if resp.status_code != 200:
+        raise Exception(f"/v1/monitors failed: {resp.status_code} → {resp.text}")
+
+    data = resp.json()
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("data") or data.get("monitors") or []
+    raise Exception(f"Unexpected /v1/monitors JSON type: {type(data)}")
+
+
+# ------------- FETCH MONITOR DETAILS (PER MONITOR) -------------
+def fetch_monitor_details(customer_id: str, access_key: str, monitor_id: str) -> Dict[str, Any]:
+    """
+    Fetch full monitor detail for a given monitor id.
+
+    Common pattern:
+      GET /v1/monitors/{id}
+
+    If your tenant uses a different endpoint (e.g. /v1/monitor/{id}), change it here.
+    """
+    url = f"{OBSERVE_BASE_URL}/v1/monitors/{monitor_id}"
+    resp = requests.get(url, headers=auth_headers(customer_id, access_key), timeout=30)
+
+    if resp.status_code != 200:
+        # Don’t crash the whole export; return an error blob for this monitor
+        return {
+            "_error": True,
+            "_error_status": resp.status_code,
+            "_error_text": resp.text,
+            "id": monitor_id,
+        }
+
+    data = resp.json()
+    # Some APIs wrap detail under "data"
+    if isinstance(data, dict) and "data" in data and isinstance(data["data"], dict):
+        return data["data"]
+    if isinstance(data, dict):
+        return data
+    return {"id": monitor_id, "_error": True, "_error_text": f"Unexpected detail type: {type(data)}"}
+
+
+# ------------- FIELD HELPERS -------------
+def s(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False)
+    return str(v)
+
+
+def get_monitor_id(m: Dict[str, Any]) -> str:
+    return str(m.get("id") or m.get("monitor_id") or m.get("_id") or "")
+
+
+def get_monitor_name(m: Dict[str, Any]) -> str:
+    return str(m.get("name") or m.get("monitor_name") or "")
+
+
+def get_created_by(m: Dict[str, Any]) -> str:
+    return (
+        m.get("created_by")
+        or (m.get("meta") or {}).get("created_by")
+        or (m.get("metadata") or {}).get("createdBy")
+        or ""
+    )
+
+
+def get_status(m: Dict[str, Any]) -> str:
+    if "enabled" in m:
+        return "enabled" if m.get("enabled") else "disabled"
+    if "disabled" in m:
+        return "disabled" if m.get("disabled") else "enabled"
+    return ""
+
+
+def get_actions_list(m: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Tenant might store actions under these keys.
+    """
+    for key in ("notification_actions", "actions", "notifications"):
+        if key in m and isinstance(m[key], list):
+            # ensure list of dicts
+            return [a for a in m[key] if isinstance(a, dict)]
+    return []
+
+
+def summarize_actions(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Create a compact summary string + keep raw JSON.
+    For PagerDuty-like actions, pull routing_key, payload.summary, payload.severity.
+    """
+    if not actions:
+        return {
+            "actions_count": 0,
+            "actions_summary": "",
+            "raw_actions_json": "",
+        }
+
+    parts = []
+    for a in actions:
+        payload = a.get("payload") if isinstance(a.get("payload"), dict) else {}
+        parts.append(
+            "|".join(
+                [
+                    str(a.get("type") or a.get("kind") or ""),                # optional
+                    str(a.get("routing_key") or a.get("integration_key") or ""),
+                    str(payload.get("severity") or ""),
+                    str(payload.get("summary") or a.get("summary") or ""),
+                ]
+            ).strip("|")
+        )
+
+    return {
+        "actions_count": len(actions),
+        "actions_summary": " ; ".join([p for p in parts if p]),
+        "raw_actions_json": json.dumps(actions, ensure_ascii=False),
+    }
+
+
+# ------------- EXPORT -------------
+def export_monitors_full(csv_path: str):
+    customer_id, access_key = login_and_get_auth()
+
+    base_list = fetch_all_monitors(customer_id, access_key)
+    print(f"Fetched {len(base_list)} monitors from list endpoint")
+
+    rows: List[Dict[str, Any]] = []
+
+    for idx, m in enumerate(base_list, start=1):
+        mid = get_monitor_id(m)
+        if not mid:
+            # list object is weird, store as-is
+            rows.append(
+                {
+                    "monitor_id": "",
+                    "monitor_name": get_monitor_name(m),
+                    "status": get_status(m),
+                    "created_by": get_created_by(m),
+                    "created_at": "",
+                    "updated_at": "",
+                    "description": "",
+                    "type": "",
+                    "folder": "",
+                    "labels": "",
+                    "actions_count": 0,
+                    "actions_summary": "",
+                    "raw_actions_json": "",
+                    "raw_monitor_json": json.dumps(m, ensure_ascii=False),
+                    "error": "Missing monitor id in list item",
+                }
+            )
+            continue
+
+        # Fetch full detail
+        detail = fetch_monitor_details(customer_id, access_key, mid)
+        time.sleep(DETAIL_CALL_SLEEP_SECONDS)
+
+        # Pull fields from detail (fallback to list)
+        name = get_monitor_name(detail) or get_monitor_name(m)
+        status = get_status(detail) or get_status(m)
+        created_by = get_created_by(detail) or get_created_by(m)
+
+        created_at = detail.get("created_at") or detail.get("createdAt") or (detail.get("meta") or {}).get("created_at")
+        updated_at = detail.get("updated_at") or detail.get("updatedAt") or (detail.get("meta") or {}).get("updated_at")
+
+        description = detail.get("description") or detail.get("desc") or ""
+        mtype = detail.get("type") or detail.get("kind") or detail.get("monitorType") or ""
+
+        # Optional folder/project/team fields vary a lot by tenant
+        folder = (
+            detail.get("folder")
+            or detail.get("folder_name")
+            or (detail.get("folderRef") or {}).get("name")
+            or ""
+        )
+
+        labels = detail.get("labels") or detail.get("tags") or detail.get("label") or ""
+
+        actions = get_actions_list(detail) or get_actions_list(m)
+        actions_summary = summarize_actions(actions)
+
+        err = ""
+        if detail.get("_error"):
+            err = f"detail_fetch_failed status={detail.get('_error_status')} text={detail.get('_error_text')}"
+
+        rows.append(
+            {
+                "monitor_id": mid,
+                "monitor_name": name,
+                "status": status,
+                "created_by": created_by,
+                "created_at": s(created_at),
+                "updated_at": s(updated_at),
+                "description": s(description),
+                "type": s(mtype),
+                "folder": s(folder),
+                "labels": s(labels),
+                "actions_count": actions_summary["actions_count"],
+                "actions_summary": actions_summary["actions_summary"],
+                "raw_actions_json": actions_summary["raw_actions_json"],
+                "raw_monitor_json": json.dumps(detail, ensure_ascii=False),
+                "error": err,
+            }
+        )
+
+        if idx % 25 == 0:
+            print(f"  ...processed {idx}/{len(base_list)}")
+
+    fieldnames = [
+        "monitor_id",
+        "monitor_name",
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at",
+        "description",
+        "type",
+        "folder",
+        "labels",
+        "actions_count",
+        "actions_summary",
+        "raw_actions_json",
+        "raw_monitor_json",
+        "error",
+    ]
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    print(f"✅ CSV written → {csv_path}")
+
+
+if __name__ == "__main__":
+    export_monitors_full(CSV_OUTPUT)
