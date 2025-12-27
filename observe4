@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+
+import csv
+import json
+import os
+import random
+import time
+import requests
+from typing import Any, Dict, List, Optional
+
+# ==========================
+# CONFIG (ENV ONLY)
+# ==========================
+CUSTOMER_ID = os.getenv("OBSERVE_CUSTOMER_ID")
+EMAIL = os.getenv("OBSERVE_EMAIL")
+PASSWORD = os.getenv("OBSERVE_PASSWORD")
+
+MASK_ON = os.getenv("OBSERVE_MASK", "on").lower() == "on"
+LIMIT = int(os.getenv("OBSERVE_LIMIT", "200"))
+THROTTLE = float(os.getenv("OBSERVE_THROTTLE_SECS", "0.05"))
+RETRIES = int(os.getenv("OBSERVE_RETRIES", "6"))
+TIMEOUT = int(os.getenv("OBSERVE_TIMEOUT", "60"))
+JSON_LIMIT = int(os.getenv("OBSERVE_JSON_LIMIT", "20000"))
+OUT_CSV = os.getenv("OBSERVE_OUT", "observe_monitors_full_export.csv")
+
+if not CUSTOMER_ID or not EMAIL or not PASSWORD:
+    raise SystemExit("Missing OBSERVE_CUSTOMER_ID / OBSERVE_EMAIL / OBSERVE_PASSWORD")
+
+BASE_URL = f"https://{CUSTOMER_ID}.observeinc.com"
+API_BASE = f"{BASE_URL}/v1"
+
+SESSION = requests.Session()
+SESSION.headers.update({"Accept": "application/json"})
+
+TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
+
+# ==========================
+# HELPERS
+# ==========================
+def maybe_mask(text: str) -> str:
+    if not MASK_ON or not isinstance(text, str):
+        return text
+    if len(text) > 12:
+        return text[:6] + "***" + text[-4:]
+    return "***"
+
+
+def safe_json(obj: Any) -> str:
+    try:
+        s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        s = str(obj)
+    return s if len(s) <= JSON_LIMIT else s[:JSON_LIMIT] + "..."
+
+
+def request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
+    for attempt in range(RETRIES + 1):
+        try:
+            r = SESSION.request(method, url, timeout=TIMEOUT, **kwargs)
+            if r.status_code < 400:
+                return r
+            if r.status_code in TRANSIENT_HTTP:
+                time.sleep(min(30, (2 ** attempt) * 0.5 + random.random()))
+                continue
+            r.raise_for_status()
+        except (requests.Timeout, requests.ConnectionError):
+            time.sleep(min(30, (2 ** attempt) * 0.5 + random.random()))
+    raise RuntimeError(f"Failed request after retries: {method} {url}")
+
+
+def get_json(url: str, params: Optional[dict] = None) -> Any:
+    return request_with_retry("GET", url, params=params).json()
+
+
+# ==========================
+# AUTH
+# ==========================
+def login() -> None:
+    r = request_with_retry(
+        "POST",
+        f"{API_BASE}/login",
+        json={"email": EMAIL, "password": PASSWORD},
+    )
+    token = r.json().get("token")
+    if not token:
+        raise RuntimeError("Login succeeded but token missing")
+    SESSION.headers["Authorization"] = f"Bearer {token}"
+
+
+# ==========================
+# OBSERVE API
+# ==========================
+def list_monitors() -> List[Dict[str, Any]]:
+    monitors = []
+    params = {"limit": LIMIT}
+
+    while True:
+        data = get_json(f"{API_BASE}/monitors", params)
+        items = data.get("items", [])
+        monitors.extend(items)
+
+        cursor = data.get("next") or data.get("cursor")
+        if not cursor:
+            break
+
+        params["cursor"] = cursor
+        time.sleep(THROTTLE)
+
+    return monitors
+
+
+def get_monitor_details(mid: str) -> Dict[str, Any]:
+    return get_json(f"{API_BASE}/monitors/{mid}")
+
+
+# ==========================
+# ACTION EXTRACTION
+# ==========================
+def extract_actions(details: Dict[str, Any]) -> List[Dict[str, Any]]:
+    actions = []
+
+    def walk(node, path=""):
+        if isinstance(node, dict):
+            if "type" in node and "webhook" in node:
+                actions.append({
+                    "action_path": path,
+                    "action_type": node.get("type"),
+                    "inline": node.get("inline"),
+                    "email": node.get("email"),
+                    "webhook": node.get("webhook"),
+                    "raw": node,
+                })
+            for k, v in node.items():
+                walk(v, f"{path}.{k}" if path else k)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+
+    walk(details)
+    return actions
+
+
+# ==========================
+# MAIN
+# ==========================
+def main():
+    print("🔐 Logging in")
+    login()
+
+    print("📡 Listing monitors")
+    monitors = list_monitors()
+    print(f"Found {len(monitors)} monitors")
+
+    rows = []
+
+    for m in monitors:
+        mid = m.get("id")
+        if not mid:
+            continue
+
+        details = get_monitor_details(mid)
+        actions = extract_actions(details)
+
+        for idx, a in enumerate(actions or [{}], start=1):
+            wh = a.get("webhook", {})
+            rows.append({
+                "monitor_id": mid,
+                "monitor_name": details.get("name"),
+                "monitor_type": details.get("type"),
+                "enabled": details.get("enabled"),
+                "action_index": idx if actions else "",
+                "action_type": a.get("action_type", ""),
+                "action_path": a.get("action_path", ""),
+                "webhook_url": wh.get("url"),
+                "webhook_method": wh.get("method"),
+                "webhook_headers": safe_json(wh.get("headers", [])),
+                "webhook_body": safe_json(wh.get("body", "")),
+                "monitor_details_json": safe_json(details),
+                "action_details_json": safe_json(a.get("raw", {})),
+            })
+
+        time.sleep(THROTTLE)
+
+    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"✅ Exported {len(rows)} rows → {OUT_CSV}")
+
+
+if __name__ == "__main__":
+    main()
