@@ -1,192 +1,376 @@
 #!/usr/bin/env python3
-
 import csv
 import json
-import os
-import random
 import time
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import requests
-from typing import Any, Dict, List, Optional
-
-# ==========================
-# CONFIG (ENV ONLY)
-# ==========================
-CUSTOMER_ID = os.getenv("OBSERVE_CUSTOMER_ID")
-EMAIL = os.getenv("OBSERVE_EMAIL")
-PASSWORD = os.getenv("OBSERVE_PASSWORD")
-
-MASK_ON = os.getenv("OBSERVE_MASK", "on").lower() == "on"
-LIMIT = int(os.getenv("OBSERVE_LIMIT", "200"))
-THROTTLE = float(os.getenv("OBSERVE_THROTTLE_SECS", "0.05"))
-RETRIES = int(os.getenv("OBSERVE_RETRIES", "6"))
-TIMEOUT = int(os.getenv("OBSERVE_TIMEOUT", "60"))
-JSON_LIMIT = int(os.getenv("OBSERVE_JSON_LIMIT", "20000"))
-OUT_CSV = os.getenv("OBSERVE_OUT", "observe_monitors_full_export.csv")
-
-if not CUSTOMER_ID or not EMAIL or not PASSWORD:
-    raise SystemExit("Missing OBSERVE_CUSTOMER_ID / OBSERVE_EMAIL / OBSERVE_PASSWORD")
-
-BASE_URL = f"https://{CUSTOMER_ID}.observeinc.com"
-API_BASE = f"{BASE_URL}/v1"
-
-SESSION = requests.Session()
-SESSION.headers.update({"Accept": "application/json"})
-
-TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
-
-# ==========================
-# HELPERS
-# ==========================
-def maybe_mask(text: str) -> str:
-    if not MASK_ON or not isinstance(text, str):
-        return text
-    if len(text) > 12:
-        return text[:6] + "***" + text[-4:]
-    return "***"
+from requests import Response
 
 
-def safe_json(obj: Any) -> str:
-    try:
-        s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-    except Exception:
-        s = str(obj)
-    return s if len(s) <= JSON_LIMIT else s[:JSON_LIMIT] + "..."
+# =========================
+# REQUIRED CONFIG
+# =========================
+# Example from your screenshot:
+#   https://abc123.cap1.observeinc.com
+CUSTOMER_DOMAIN = "https://abc123.cap1.observeinc.com"
+
+EMAIL = "your_email_here"
+PASSWORD = "your_password_here"
+
+# IMPORTANT: You said /v1/login is the login endpoint
+API_BASE = f"{CUSTOMER_DOMAIN}/v1"
+
+# Toggle masking
+MASK_KEYS = False
+
+# SSL verification: keep True normally.
+# If your environment has SSL interception / internal cert issues, set False.
+VERIFY_SSL = True
+
+# Retry settings
+MAX_RETRIES = 5
+RETRY_SLEEP_SECONDS = 2
+TIMEOUT_SECONDS = 30
+
+# Pagination
+PAGE_LIMIT = 100
+
+# Output
+OUTPUT_CSV = "observe_monitors_with_shared_actions.csv"
 
 
-def request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
-    for attempt in range(RETRIES + 1):
+# =========================
+# UTILITIES
+# =========================
+def maybe_mask_value(key: str, value: Any) -> Any:
+    """Mask sensitive values if MASK_KEYS is True."""
+    if not MASK_KEYS:
+        return value
+
+    if not isinstance(value, str):
+        return value
+
+    k = (key or "").lower()
+    sensitive_markers = [
+        "authorization", "token", "secret", "password", "apikey", "api_key", "key"
+    ]
+    if any(m in k for m in sensitive_markers):
+        if len(value) <= 6:
+            return "***"
+        return value[:3] + "***" + value[-3:]
+    return value
+
+
+def sanitize_obj(obj: Any) -> Any:
+    """Recursively mask sensitive fields based on key names."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                out[k] = sanitize_obj(v)
+            else:
+                out[k] = maybe_mask_value(str(k), v)
+        return out
+    if isinstance(obj, list):
+        return [sanitize_obj(x) for x in obj]
+    return obj
+
+
+def request_with_retry(
+    session: requests.Session,
+    method: str,
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Response:
+    """
+    Same behavior as observe4 (retry + raise), but now includes the REAL failure reason:
+    - HTTP status + response body (if server responded)
+    - exception type/message (if network/SSL/DNS/etc)
+    """
+    last_exc: Optional[Exception] = None
+    last_status: Optional[int] = None
+    last_body: Optional[str] = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            r = SESSION.request(method, url, timeout=TIMEOUT, **kwargs)
-            if r.status_code < 400:
-                return r
-            if r.status_code in TRANSIENT_HTTP:
-                time.sleep(min(30, (2 ** attempt) * 0.5 + random.random()))
+            resp = session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                timeout=TIMEOUT_SECONDS,
+                verify=VERIFY_SSL,
+            )
+
+            last_status = resp.status_code
+            # If non-2xx, keep body for debugging and retry (some APIs may transiently fail)
+            if resp.status_code < 200 or resp.status_code >= 300:
+                try:
+                    last_body = resp.text
+                except Exception:
+                    last_body = "<unable to read response body>"
+
+                # Retry on common transient codes, but still retry a few times even for auth errors
+                # so you can see consistent failure output with body.
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_SLEEP_SECONDS)
+                    continue
+
+                # Final attempt failed with HTTP response
+                raise RuntimeError(
+                    f"Failed request after retries: {method} {url} "
+                    f"(HTTP {resp.status_code}) Body: {last_body}"
+                )
+
+            return resp
+
+        except Exception as e:
+            last_exc = e
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_SLEEP_SECONDS)
                 continue
-            r.raise_for_status()
-        except (requests.Timeout, requests.ConnectionError):
-            time.sleep(min(30, (2 ** attempt) * 0.5 + random.random()))
-    raise RuntimeError(f"Failed request after retries: {method} {url}")
+
+            # Final attempt failed with exception (SSL/DNS/timeout/etc)
+            raise RuntimeError(
+                f"Failed request after retries: {method} {url}. "
+                f"Last exception: {type(last_exc).__name__}: {last_exc}"
+            )
 
 
-def get_json(url: str, params: Optional[dict] = None) -> Any:
-    return request_with_retry("GET", url, params=params).json()
+# =========================
+# OBSERVE API CALLS
+# =========================
+def login(session: requests.Session) -> str:
+    # endpoint must be /v1/login
+    url = f"{API_BASE}/login"
+    payload = {"email": EMAIL, "password": PASSWORD}
 
+    # Keep headers simple (JSON)
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
-# ==========================
-# AUTH
-# ==========================
-def login() -> None:
-    r = request_with_retry(
-        "POST",
-        f"{API_BASE}/login",
-        json={"email": EMAIL, "password": PASSWORD},
+    r = request_with_retry(session, "POST", url, headers=headers, json_body=payload)
+    data = r.json()
+
+    # Try common token shapes
+    token = (
+        data.get("accessToken")
+        or data.get("access_token")
+        or data.get("token")
+        or data.get("bearerToken")
+        or data.get("bearer_token")
     )
-    token = r.json().get("token")
+
     if not token:
-        raise RuntimeError("Login succeeded but token missing")
-    SESSION.headers["Authorization"] = f"Bearer {token}"
+        # Don't change flow—just show what came back (masked optionally)
+        safe = sanitize_obj(data)
+        raise RuntimeError(f"Login succeeded but no token found in response: {safe}")
+
+    return token
 
 
-# ==========================
-# OBSERVE API
-# ==========================
-def list_monitors() -> List[Dict[str, Any]]:
-    monitors = []
-    params = {"limit": LIMIT}
+def list_monitors(session: requests.Session, bearer: str) -> List[Dict[str, Any]]:
+    """
+    Get all monitors with pagination.
+    This tries to handle different pagination shapes without changing your overall flow.
+    """
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {bearer}",
+    }
+
+    monitors: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    offset: Optional[int] = None
 
     while True:
-        data = get_json(f"{API_BASE}/monitors", params)
-        items = data.get("items", [])
-        monitors.extend(items)
+        url = f"{API_BASE}/monitors"
+        params: Dict[str, Any] = {"limit": PAGE_LIMIT}
 
-        cursor = data.get("next") or data.get("cursor")
-        if not cursor:
-            break
+        # Support both cursor and offset based pagination
+        if cursor:
+            params["cursor"] = cursor
+        if offset is not None:
+            params["offset"] = offset
 
-        params["cursor"] = cursor
-        time.sleep(THROTTLE)
+        r = request_with_retry(session, "GET", url, headers=headers, params=params)
+        data = r.json()
+
+        # Common list keys
+        batch = (
+            data.get("items")
+            or data.get("monitors")
+            or data.get("data")
+            or []
+        )
+
+        if isinstance(batch, dict):
+            # sometimes APIs return { "items": { ... } } weirdness
+            batch = [batch]
+
+        if not isinstance(batch, list):
+            batch = []
+
+        monitors.extend(batch)
+
+        # Pagination detection
+        next_cursor = data.get("nextCursor") or data.get("next_cursor")
+        next_url = data.get("next")  # sometimes a URL
+        has_more = data.get("hasMore") or data.get("has_more")
+
+        if next_cursor:
+            cursor = next_cursor
+            continue
+
+        if isinstance(next_url, str) and next_url:
+            # If API returns a full URL, use it.
+            # Keep behavior simple: fetch until no next
+            r2 = request_with_retry(session, "GET", next_url, headers=headers)
+            data = r2.json()
+            batch = data.get("items") or data.get("monitors") or data.get("data") or []
+            if isinstance(batch, list):
+                monitors.extend(batch)
+            cursor = data.get("nextCursor") or data.get("next_cursor")
+            if cursor:
+                continue
+            next_url = data.get("next")
+            if not next_url:
+                break
+            continue
+
+        if has_more and isinstance(has_more, bool):
+            # if "hasMore": true, try offset paging
+            if offset is None:
+                offset = len(monitors)
+            else:
+                offset += PAGE_LIMIT
+            continue
+
+        # If nothing indicates more pages, stop.
+        break
 
     return monitors
 
 
-def get_monitor_details(mid: str) -> Dict[str, Any]:
-    return get_json(f"{API_BASE}/monitors/{mid}")
+def get_monitor_details(session: requests.Session, bearer: str, monitor_id: str) -> Dict[str, Any]:
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {bearer}",
+    }
+    url = f"{API_BASE}/monitors/{monitor_id}"
+    r = request_with_retry(session, "GET", url, headers=headers)
+    return r.json()
 
 
-# ==========================
-# ACTION EXTRACTION
-# ==========================
-def extract_actions(details: Dict[str, Any]) -> List[Dict[str, Any]]:
-    actions = []
+def extract_shared_actions(obj: Any, path: str = "") -> List[Dict[str, Any]]:
+    """
+    Extract shared action info without guessing the schema too hard.
+    Looks for keys like sharedActions/shared_actions and also collects any dicts under them.
+    """
+    found: List[Dict[str, Any]] = []
 
-    def walk(node, path=""):
-        if isinstance(node, dict):
-            if "type" in node and "webhook" in node:
-                actions.append({
-                    "action_path": path,
-                    "action_type": node.get("type"),
-                    "inline": node.get("inline"),
-                    "email": node.get("email"),
-                    "webhook": node.get("webhook"),
-                    "raw": node,
-                })
-            for k, v in node.items():
-                walk(v, f"{path}.{k}" if path else k)
-        elif isinstance(node, list):
-            for i, v in enumerate(node):
-                walk(v, f"{path}[{i}]")
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            key_l = str(k).lower()
+            new_path = f"{path}.{k}" if path else str(k)
 
-    walk(details)
-    return actions
+            if key_l in ("sharedactions", "shared_actions", "sharedaction", "shared_action"):
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, dict):
+                            found.append({"_path": new_path, **item})
+                        else:
+                            found.append({"_path": new_path, "value": item})
+                elif isinstance(v, dict):
+                    found.append({"_path": new_path, **v})
+                else:
+                    found.append({"_path": new_path, "value": v})
+                continue
+
+            # Recurse
+            if isinstance(v, (dict, list)):
+                found.extend(extract_shared_actions(v, new_path))
+
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            new_path = f"{path}[{i}]"
+            if isinstance(item, (dict, list)):
+                found.extend(extract_shared_actions(item, new_path))
+
+    return found
 
 
-# ==========================
+def flatten_dict(d: Dict[str, Any], prefix: str = "", out: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if out is None:
+        out = {}
+    for k, v in d.items():
+        col = f"{prefix}{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            flatten_dict(v, prefix=f"{col}.", out=out)
+        elif isinstance(v, list):
+            # store list as JSON string
+            out[col] = json.dumps(v, ensure_ascii=False)
+        else:
+            out[col] = v
+    return out
+
+
+# =========================
 # MAIN
-# ==========================
-def main():
-    print("🔐 Logging in")
-    login()
+# =========================
+def main() -> None:
+    session = requests.Session()
 
-    print("📡 Listing monitors")
-    monitors = list_monitors()
-    print(f"Found {len(monitors)} monitors")
+    bearer = login(session)
 
-    rows = []
+    monitors = list_monitors(session, bearer)
+
+    rows: List[Dict[str, Any]] = []
 
     for m in monitors:
-        mid = m.get("id")
-        if not mid:
+        monitor_id = m.get("id") or m.get("monitorId") or m.get("monitor_id")
+        if not monitor_id:
+            # still write something to help you debug odd shapes
+            rows.append({"monitor_id": "", "error": "missing monitor id in list response", "monitor_list_item": json.dumps(sanitize_obj(m))})
             continue
 
-        details = get_monitor_details(mid)
-        actions = extract_actions(details)
+        details = get_monitor_details(session, bearer, str(monitor_id))
+        shared_actions = extract_shared_actions(details)
 
-        for idx, a in enumerate(actions or [{}], start=1):
-            wh = a.get("webhook", {})
-            rows.append({
-                "monitor_id": mid,
-                "monitor_name": details.get("name"),
-                "monitor_type": details.get("type"),
-                "enabled": details.get("enabled"),
-                "action_index": idx if actions else "",
-                "action_type": a.get("action_type", ""),
-                "action_path": a.get("action_path", ""),
-                "webhook_url": wh.get("url"),
-                "webhook_method": wh.get("method"),
-                "webhook_headers": safe_json(wh.get("headers", [])),
-                "webhook_body": safe_json(wh.get("body", "")),
-                "monitor_details_json": safe_json(details),
-                "action_details_json": safe_json(a.get("raw", {})),
-            })
+        base = {
+            "monitor_id": str(monitor_id),
+            "monitor_name": details.get("name") or m.get("name") or "",
+        }
 
-        time.sleep(THROTTLE)
+        # If no shared actions found, still include the monitor row
+        if not shared_actions:
+            row = {**base, "shared_action_found": "false"}
+            rows.append(row)
+        else:
+            for sa in shared_actions:
+                row = {**base, "shared_action_found": "true"}
+                row.update(flatten_dict(sa, prefix="shared_action."))
+                rows.append(row)
 
-    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
+    # Mask at the very end (so logic works on real keys)
+    safe_rows = [sanitize_obj(r) for r in rows]
 
-    print(f"✅ Exported {len(rows)} rows → {OUT_CSV}")
+    # Write one CSV
+    all_cols = set()
+    for r in safe_rows:
+        all_cols.update(r.keys())
+    columns = sorted(all_cols)
+
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=columns)
+        w.writeheader()
+        for r in safe_rows:
+            w.writerow(r)
+
+    print(f"Done. Wrote {len(safe_rows)} rows to {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
