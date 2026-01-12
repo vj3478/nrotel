@@ -1,0 +1,83 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3ArtifactsBucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+      "Resource": "arn:aws:s3:::cw-synthetics-artifacts-123456789012-us-east-1",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["canaries/myapp-login-prod/*"]
+        }
+      }
+    },
+    {
+      "Sid": "S3ArtifactsObjectRW",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::cw-synthetics-artifacts-123456789012-us-east-1/canaries/myapp-login-prod/*"
+    },
+    {
+      "Sid": "CloudWatchLogsWrite",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": [
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/cwsyn-myapp-login-prod*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/cwsyn-myapp-login-prod*:log-stream:*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchMetricsPublish",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "cloudwatch:namespace": "CloudWatchSynthetics" }
+      }
+    },
+    {
+      "Sid": "XRayWrite",
+      "Effect": "Allow",
+      "Action": ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+      "Resource": "*"
+    },
+
+    {
+      "Sid": "ReadSecretsManagerSecrets",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+      "Resource": "arn:aws:secretsmanager:us-east-1:123456789012:secret:myapp/prod/*"
+    },
+    {
+      "Sid": "ReadSSMParameters",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+      "Resource": "arn:aws:ssm:us-east-1:123456789012:parameter/myapp/prod/*"
+    },
+
+    {
+      "Sid": "DecryptForSecretsAndSSMIfCMKUsed",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt"],
+      "Resource": "arn:aws:kms:us-east-1:123456789012:key/REPLACE-WITH-YOUR-KMS-KEY-ID",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "secretsmanager.us-east-1.amazonaws.com",
+            "ssm.us-east-1.amazonaws.com"
+          ]
+        }
+      }
+    }
+
+    // OPTIONAL: add VPC permissions if canary runs in a VPC
+    // OPTIONAL: add other service permissions if your script calls them (e.g., dynamodb:GetItem, s3:GetObject on other buckets, etc.)
+  ]
+}
