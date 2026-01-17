@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+Query New Relic NerdGraph for how many NRQL alert conditions reference each metric.
+
+Input:  CSV with a column containing metric names (default column name: metric_name)
+Output: CSV with columns: metric_name,total_count
+"""
+
+import csv
+import os
+import sys
+import time
+from typing import Dict, Optional, Tuple
+
+import requests
+
+NERDGRAPH_URL = "https://api.newrelic.com/graphql"
+
+GQL_QUERY = """
+query MetricUsageInAlert($accountId: Int!, $metric: String!) {
+  actor {
+    account(id: $accountId) {
+      alerts {
+        nrqlConditionsSearch(searchCriteria: { queryLike: $metric }) {
+          totalCount
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def read_metric_names(csv_path: str, column: str) -> list[str]:
+    metrics: list[str] = []
+    with open(csv_path, "r", newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError("Input CSV has no header row.")
+        if column not in reader.fieldnames:
+            raise ValueError(
+                f"Column '{column}' not found in input CSV. Found columns: {reader.fieldnames}"
+            )
+        for row in reader:
+            name = (row.get(column) or "").strip()
+            if name:
+                metrics.append(name)
+    # de-dupe while keeping order
+    seen = set()
+    out = []
+    for m in metrics:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def nerdgraph_request(
+    api_key: str,
+    account_id: int,
+    metric: str,
+    timeout_s: int = 30,
+    max_retries: int = 5,
+) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Returns (total_count, error_message).
+    Retries on network errors and 429/5xx.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "API-Key": api_key,
+    }
+
+    payload = {
+        "query": GQL_QUERY,
+        "variables": {
+            "accountId": account_id,
+            "metric": metric,
+        },
+    }
+
+    backoff = 1.0
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.post(NERDGRAPH_URL, headers=headers, json=payload, timeout=timeout_s)
+        except requests.RequestException as e:
+            if attempt == max_retries:
+                return None, f"request_error: {e}"
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+
+        # Retry on rate limit / transient server issues
+        if r.status_code in (429, 500, 502, 503, 504):
+            if attempt == max_retries:
+                return None, f"http_{r.status_code}: {r.text}"
+            retry_after = r.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                time.sleep(float(retry_after))
+            else:
+                time.sleep(backoff)
+                backoff *= 2
+            continue
+
+        if r.status_code != 200:
+            return None, f"http_{r.status_code}: {r.text}"
+
+        data = r.json()
+
+        # NerdGraph can return 200 with "errors"
+        if "errors" in data and data["errors"]:
+            return None, f"graphql_errors: {data['errors']}"
+
+        try:
+            total = (
+                data["data"]["actor"]["account"]["alerts"]["nrqlConditionsSearch"]["totalCount"]
+            )
+            return int(total), None
+        except Exception as e:
+            return None, f"parse_error: {e} | response={data}"
+
+    return None, "unknown_error"
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(
+            "Usage:\n"
+            "  python metric_usage_in_alerts.py <input.csv> <output.csv> [--column metric_name]\n\n"
+            "Env vars required:\n"
+            "  NEW_RELIC_API_KEY\n"
+            "  NEW_RELIC_ACCOUNT_ID\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    input_csv = sys.argv[1]
+    output_csv = sys.argv[2]
+    column = "metric_name"
+    if "--column" in sys.argv:
+        i = sys.argv.index("--column")
+        if i + 1 >= len(sys.argv):
+            raise SystemExit("Missing value after --column")
+        column = sys.argv[i + 1]
+
+    api_key = os.getenv("NEW_RELIC_API_KEY")
+    account_id_raw = os.getenv("NEW_RELIC_ACCOUNT_ID")
+
+    if not api_key:
+        raise SystemExit("Missing env var NEW_RELIC_API_KEY")
+    if not account_id_raw or not account_id_raw.isdigit():
+        raise SystemExit("Missing/invalid env var NEW_RELIC_ACCOUNT_ID (must be an integer)")
+
+    account_id = int(account_id_raw)
+
+    metrics = read_metric_names(input_csv, column)
+    if not metrics:
+        raise SystemExit("No metric names found in input CSV.")
+
+    results: list[Dict[str, str]] = []
+    for idx, metric in enumerate(metrics, start=1):
+        total, err = nerdgraph_request(api_key=api_key, account_id=account_id, metric=metric)
+        if err:
+            # If you prefer, you can write -1 instead of blank for failures
+            total_str = ""
+            print(f"[{idx}/{len(metrics)}] {metric}: ERROR {err}", file=sys.stderr)
+        else:
+            total_str = str(total)
+            print(f"[{idx}/{len(metrics)}] {metric}: {total_str}")
+
+        results.append({"metric_name": metric, "total_count": total_str})
+
+        # small pacing to be friendly to rate limits
+        time.sleep(0.05)
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["metric_name", "total_count"])
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\nWrote: {output_csv}")
+
+
+if __name__ == "__main__":
+    main()
