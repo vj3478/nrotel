@@ -1,0 +1,24 @@
+Hello Team,
+
+My name is Vijay Bachu and I am part of the Observability/Monitoring Engineering team responsible for managing our enterprise New Relic platform, including telemetry ingestion and platform governance.
+
+As part of our ongoing monitoring and optimization efforts, we have observed that some applications are currently ingesting metric data at a much higher frequency than the enterprise-recommended configuration. Our enterprise standard for metric collection is a 60-second scrape interval.
+
+At the moment, our organization has reached the enterprise ingestion threshold, and continued high-frequency data ingestion may lead to additional platform costs. In situations where ingestion exceeds enterprise limits, the additional cost may be attributed to the teams sending unusually high volumes of telemetry data.
+
+To help maintain platform stability and control ingestion costs across the organization, we request that teams review their telemetry configurations and ensure the scrape interval is set to the recommended 60 seconds wherever possible.
+
+Specifically, please review:
+- OpenTelemetry or Prometheus scrape configurations  
+- Kubernetes metric collection settings  
+- Any custom metric exporters or collectors
+
+If your application requires a higher scrape frequency for critical operational reasons, please reach out so we can review the use case together and determine the best approach.
+
+We appreciate your support in helping keep the observability platform efficient and sustainable for all teams. If you have any questions or need assistance identifying the configuration changes, please feel free to contact me.
+
+Thank you for your cooperation.
+
+Best regards,  
+Vijay Bachu  
+Observability / Monitoring Engineering
