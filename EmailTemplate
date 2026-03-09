@@ -22,3 +22,22 @@ Thank you for your cooperation.
 Best regards,  
 Vijay Bachu  
 Observability / Monitoring Engineering
+
+
+
+
+Hello Team,
+
+My name is Vijay Bachu from the Observability/Monitoring Engineering team, and I help manage the enterprise New Relic platform and telemetry ingestion.
+
+We have observed that some applications are ingesting metrics at a higher frequency than the enterprise-recommended 60-second scrape interval. Our enterprise ingestion limit has currently been reached, and continued high-frequency ingestion may lead to additional platform costs, which could be attributed to teams sending excessive data.
+
+Please review your telemetry configuration (OpenTelemetry/Prometheus collectors, exporters, etc.) and update the scrape interval to 60 seconds where applicable.
+
+If a higher frequency is required for a valid operational reason, please reach out so we can review the use case.
+
+Thank you for your cooperation.
+
+Best regards,  
+Vijay Bachu  
+Observability / Monitoring Engineering
