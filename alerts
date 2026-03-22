@@ -1,0 +1,266 @@
+🎤 NEW RELIC ALERTING – FULL SPEAKING SCRIPT
+
+⸻
+
+🟢 Slide 1: Opening – Why This Matters (45 sec)
+
+“Today I want to walk you through how New Relic alerting works end-to-end, and more importantly, how we can use it to reduce noise, improve signal quality, and ultimately reduce MTTR across our systems.
+
+At a high level, New Relic alerting is not just about triggering alerts — it’s about transforming raw telemetry into actionable insights, routing them intelligently, and ensuring the right teams get the right signal at the right time.
+
+What I’ll cover today is the full alert lifecycle — from signal detection all the way to notification — and where we can optimize it.”
+
+⸻
+
+🟢 Slide 2: 10,000-Foot View (1 min)
+
+“Let’s start with the big picture.
+
+Everything begins with signal data — metrics, logs, traces, synthetics, or business events.
+
+That data flows into the alert engine, where we define conditions to detect anomalies or threshold breaches.
+
+Once a condition is met:
+	•	An incident is created
+	•	Incidents are grouped into issues to reduce noise
+	•	Issues are passed into workflows
+	•	And finally routed to destinations like Slack, PagerDuty, or ServiceNow
+
+So the pipeline is:
+Signal → Condition → Incident → Issue → Workflow → Notification
+
+The key value here is not just detection — it’s noise reduction and intelligent routing.”
+
+⸻
+
+🟢 Slide 3: What is a Signal? (1 min)
+
+“A signal is essentially any NRQL query result over time.
+
+This is very powerful because:
+	•	If we can query it, we can alert on it
+	•	It supports faceting, which allows us to monitor multiple entities independently
+
+For example:
+	•	CPU per host
+	•	Error rate per service
+	•	Latency per API endpoint
+
+Each facet becomes its own signal stream.
+
+This is where scale comes in — but also where noise can explode if not handled properly.”
+
+⸻
+
+🟢 Slide 4: Conditions – Detection Layer (1.5 min)
+
+“Conditions are where we define what ‘bad’ looks like.
+
+Each condition has:
+	•	A signal query (NRQL)
+	•	A threshold (warning or critical)
+	•	A time window
+
+For example:
+	•	Error rate > 5% for 5 minutes
+	•	Latency > 2 seconds sustained
+
+Now, an important nuance:
+New Relic does not trigger instantly — it evaluates over a window, which helps reduce false positives.
+
+This is where a lot of tuning happens:
+	•	Too sensitive → noise
+	•	Too relaxed → missed issues
+
+So conditions are really the first control point for signal quality.”
+
+⸻
+
+🟢 Slide 5: Incidents (Events) (1 min)
+
+“When a signal breaches a threshold, an incident is opened.
+
+A few key behaviors:
+	•	Incidents open automatically when threshold is breached
+	•	They close automatically when signal recovers
+	•	One incident is created per facet
+
+So if we are faceting by host, and 10 hosts fail — we get 10 incidents.
+
+This is powerful for granularity — but also where alert volume can spike quickly.”
+
+⸻
+
+🟢 Slide 6: Issues – Noise Reduction Layer (1.5 min)
+
+“This is where New Relic becomes very powerful.
+
+Instead of sending every incident as a notification, it groups incidents into issues.
+
+Think of incidents as symptoms — and issues as the actual problem.
+
+For example:
+	•	10 pods failing → 10 incidents
+	•	But grouped into 1 issue → ‘Service degradation’
+
+This reduces noise significantly.
+
+Issues:
+	•	Open when incidents open
+	•	Can contain multiple incidents
+	•	Close automatically when all incidents resolve
+
+This layer is critical for:
+	•	Reducing alert fatigue
+	•	Improving triage efficiency
+	•	Giving a higher-level view of problems”
+
+⸻
+
+🟢 Slide 7: Policies – Grouping Strategy (1 min)
+
+“Policies control how incidents are grouped into issues.
+
+There are three main strategies:
+	1.	Per Policy → everything grouped together
+	2.	Per Condition → grouped by condition
+	3.	Per Incident → no grouping (maximum granularity)
+
+Choosing the right strategy is key:
+	•	Too much grouping → loss of detail
+	•	Too little grouping → alert explosion
+
+So policies define our noise vs visibility tradeoff.”
+
+⸻
+
+🟢 Slide 8: Workflows – Routing Intelligence (1.5 min)
+
+“Once an issue is created, it flows into workflows.
+
+Workflows determine:
+	•	Who gets notified
+	•	When they get notified
+	•	What information they receive
+
+This is where we can implement intelligent routing, for example:
+	•	Route infra alerts to platform team
+	•	Route application alerts to service owners
+	•	Route critical alerts differently from warnings
+
+Workflows also support:
+	•	Payload customization
+	•	Filtering logic
+	•	Enrichment with additional metadata
+
+This is where alerting becomes context-aware, not just reactive.”
+
+⸻
+
+🟢 Slide 9: Destinations (45 sec)
+
+“Destinations are simply where notifications go:
+	•	Slack
+	•	PagerDuty
+	•	ServiceNow
+	•	Email
+
+They are reusable and decoupled from workflows.
+
+This allows us to:
+	•	Standardize integrations
+	•	Reuse configurations
+	•	Scale notification strategy easily”
+
+⸻
+
+🟢 Slide 10: Muting Rules – Critical for Noise Control (1.5 min)
+
+“This is one of the most important features for real-world operations — muting rules.
+
+Muting rules allow us to suppress alerts:
+	•	During maintenance windows
+	•	During deployments
+	•	For known issues
+
+They can be scoped by:
+	•	Entity
+	•	Tags
+	•	Conditions
+
+And can be time-based or dynamic.
+
+Without muting rules:
+	•	Teams get flooded with expected alerts
+	•	Trust in alerting drops
+
+With muting:
+	•	We maintain signal quality
+	•	Reduce fatigue
+	•	Ensure alerts are meaningful”
+
+⸻
+
+🟢 Slide 11: Workflow Automation (1.5 min)
+
+“Beyond basic routing, workflows enable automation.
+
+We can:
+	•	Enrich alerts with metadata
+	•	Customize payloads for different systems
+	•	Route dynamically based on attributes
+
+For example:
+	•	Add service owner info
+	•	Include runbook links
+	•	Trigger downstream automation
+
+This is where alerting integrates into a broader incident response ecosystem.
+
+It’s not just notifying — it’s enabling faster resolution.”
+
+⸻
+
+🟢 Slide 12: Signals to Alert On (1 min)
+
+“In terms of what we should alert on, we focus on high-value signals:
+	•	Infrastructure metrics (CPU, memory)
+	•	APM golden signals (latency, errors, throughput)
+	•	Key transactions
+	•	Synthetic monitoring
+	•	Business metrics
+
+The key principle:
+👉 Not everything should alert
+👉 Only what impacts reliability or customer experience”
+
+⸻
+
+🟢 Slide 13: Closing – Business Impact (1 min)
+
+“To summarize:
+
+New Relic alerting provides:
+	•	End-to-end visibility from signal to notification
+	•	Built-in noise reduction via issues
+	•	Intelligent routing via workflows
+	•	Strong control via muting rules
+
+When implemented correctly, this leads to:
+	•	Reduced alert fatigue
+	•	Faster triage
+	•	Lower MTTR
+	•	Better operational efficiency
+
+The opportunity for us is to standardize and optimize these layers so that alerting becomes a trusted and scalable system, not a source of noise.”
+
+⸻
+
+✅ How to Practice (Quick Tip)
+	•	Read once slowly → understand flow
+	•	Practice again with pauses between slides
+	•	Keep total time ~10–12 min
+	•	Emphasize:
+	•	“noise reduction”
+	•	“MTTR”
+	•	“signal quality”
