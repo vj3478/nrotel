@@ -1,0 +1,110 @@
+Introduction
+
+New Relic alerting is designed to convert telemetry data into actionable signals that enable teams to detect and respond to issues in real time. In modern distributed systems, where applications span multiple services, environments, and infrastructures, having a structured and scalable alerting system is critical.
+
+At a high level, New Relic alerting operates as a layered system. It begins with data collection and signal generation, evaluates that data against defined conditions, generates incidents when thresholds are breached, groups related incidents into issues, and finally routes notifications through workflows to designated destinations such as Slack, PagerDuty, or ServiceNow.
+
+Understanding each of these layers is essential to understanding how alerting behaves and how alerts are ultimately delivered to teams.
+
+⸻
+
+Signal Generation
+
+The foundation of alerting in New Relic is the concept of a signal. A signal is typically derived from an NRQL query, which allows users to define alerting logic based on virtually any data stored in the platform. This includes infrastructure metrics, application performance data, logs, traces, synthetics, and even custom business events.
+
+One of the most powerful aspects of signals is the ability to use faceting. Faceting allows a single query to monitor multiple entities independently, such as hosts, services, or API endpoints. Each facet effectively becomes its own signal stream. While this provides granular visibility, it also means that a single condition can generate multiple alerts if multiple entities breach thresholds simultaneously.
+
+⸻
+
+Condition Evaluation
+
+Conditions define how signals are evaluated and determine when an alert should be triggered. Each condition consists of a query, threshold values, and an evaluation window.
+
+For example, a condition might evaluate whether the error rate of a service exceeds a certain percentage over a five-minute window. The evaluation window plays an important role because it ensures that alerts are not triggered based on transient spikes, thereby reducing false positives.
+
+Conditions can define both warning and critical thresholds, allowing teams to differentiate between early indicators and severe issues. This layer is where alert sensitivity is controlled and where the system determines what constitutes an actionable event.
+
+⸻
+
+Incident Creation
+
+When a condition is met, New Relic generates an incident. An incident represents a single occurrence of a threshold violation for a specific signal.
+
+Incidents are automatically opened when conditions are breached and automatically closed when the signal returns to normal. In scenarios where signals are faceted, each facet can generate its own incident. For example, if a condition is monitoring CPU usage across multiple hosts, each host exceeding the threshold will create an individual incident.
+
+This behavior provides detailed visibility but can also result in a higher number of incidents, especially in large-scale environments.
+
+⸻
+
+Issue Grouping
+
+To manage this potential volume of incidents, New Relic introduces the concept of issues. Issues act as a higher-level grouping mechanism that consolidates related incidents into a single problem.
+
+Instead of treating each incident independently, issues provide a unified view of what is happening. For example, multiple incidents across different components of a service can be grouped into one issue that represents a broader service degradation.
+
+An issue remains open as long as at least one associated incident is active. Once all related incidents are resolved, the issue is automatically closed. This grouping mechanism helps provide better context and reduces the need to process each incident individually.
+
+⸻
+
+Policies and Grouping Behavior
+
+Policies are used to organize alert conditions and define how incidents are grouped into issues. They provide structure to alerting configurations and determine the grouping strategy.
+
+Depending on the configuration, incidents can be grouped at different levels:
+	•	At the policy level, where multiple conditions contribute to a single issue
+	•	At the condition level, where incidents from the same condition are grouped
+	•	Or at the individual incident level, where no grouping is applied
+
+Policies allow teams to align alerting behavior with different use cases, such as infrastructure monitoring versus application-level monitoring.
+
+⸻
+
+Muting Rules
+
+Muting rules provide a mechanism to suppress alert notifications under specific conditions. These are typically used during maintenance windows, deployments, or known system states where alerts are expected but not actionable.
+
+Muting rules can be defined based on entities, tags, or conditions, and can be scheduled for specific time windows. It is important to note that muting rules do not stop data collection or signal evaluation; they only suppress the notifications generated from those signals.
+
+This allows monitoring to continue uninterrupted while preventing unnecessary alerts from being sent during planned or expected events.
+
+⸻
+
+Workflows and Routing
+
+Once an issue is created, it is evaluated by workflows. Workflows determine how alerts are routed and who is notified.
+
+Workflows can filter issues based on attributes such as severity, entity, policy, or metadata. Based on these filters, workflows route alerts to appropriate destinations and can also customize the notification payload.
+
+This layer enables flexible and dynamic routing, ensuring that alerts reach the correct teams with the relevant context needed for investigation.
+
+⸻
+
+Destinations and Notifications
+
+Destinations represent the endpoints where alert notifications are delivered. Common integrations include communication and incident management tools such as Slack, PagerDuty, ServiceNow, and email.
+
+Destinations are configured independently and can be reused across multiple workflows. This separation allows for consistent integration management and simplifies the process of routing alerts across different teams and tools.
+
+⸻
+
+End-to-End Flow Summary
+
+Putting all components together, the alert lifecycle in New Relic follows a structured flow:
+	1.	Telemetry data generates a signal
+	2.	Conditions evaluate the signal against thresholds
+	3.	Incidents are created when conditions are breached
+	4.	Incidents are grouped into issues
+	5.	Issues are processed through workflows
+	6.	Notifications are sent to configured destinations
+
+Each layer in this flow contributes to transforming raw data into meaningful alerts that support operational awareness and incident response.
+
+⸻
+
+Conclusion
+
+New Relic alerting provides a comprehensive framework for monitoring and alerting across modern systems. Its layered approach allows for flexibility in defining signals, control over how alerts are triggered, and structured routing of notifications.
+
+By combining signal-based alerting, incident tracking, issue grouping, workflow-based routing, and integrations with external systems, New Relic enables teams to effectively monitor their environments and respond to issues as they arise.
+
+This architecture supports both granular visibility and high-level problem representation, making it suitable for complex, distributed environments where observability and responsiveness are critical.
