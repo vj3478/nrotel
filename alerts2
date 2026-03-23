@@ -1,0 +1,158 @@
+Introduction
+
+New Relic alerting provides a structured framework for transforming telemetry data into actionable operational signals. In modern distributed environments, where systems span multiple services and infrastructures, alerting plays a critical role in enabling real-time awareness and response.
+
+At a high level, New Relic alerting operates as a layered system. Each layer contributes a specific capability — from signal detection and condition evaluation to incident creation, issue grouping, and notification routing.
+
+Rather than functioning as isolated features, these layers work together as an integrated alerting pipeline that ensures relevant information is surfaced to the appropriate teams in a timely and structured manner.
+
+⸻
+
+Signal Layer (Signal Generation)
+
+The foundation of the alerting framework is the signal layer. A signal is derived from an NRQL query, allowing alerting to be defined on virtually any data available within New Relic, including infrastructure metrics, application performance data, logs, traces, and custom events.
+
+A key capability within this layer is faceting. Faceting enables a single query to evaluate multiple entities independently, such as hosts, services, or endpoints. Each facet behaves as an independent signal stream, providing granular visibility across systems.
+
+This flexibility allows for broad coverage, while also supporting detailed monitoring at the entity level.
+
+⸻
+
+Condition Layer (Evaluation Logic)
+
+The condition layer defines how signals are evaluated and determines when an alert should be triggered.
+
+Each condition consists of:
+	•	A signal (NRQL query)
+	•	Threshold definitions
+	•	An evaluation window
+
+The evaluation window plays an important role by ensuring that conditions are assessed over a defined period rather than based on transient spikes. This provides stability in alerting behavior.
+
+Conditions can define both warning and critical thresholds, enabling differentiation between early indicators and more severe events.
+
+This layer represents the core detection logic within the alerting framework.
+
+⸻
+
+Incident Layer (Event Generation)
+
+When a condition is met, the system generates an incident. An incident represents a single occurrence of a threshold violation tied to a specific signal.
+
+Incidents are automatically opened when conditions are breached and automatically closed when the signal returns to normal.
+
+In cases where signals are faceted, each facet can generate its own incident. This enables detailed visibility across multiple entities but can also result in a higher number of individual events being tracked simultaneously.
+
+⸻
+
+Issue Layer (Event Correlation and Grouping)
+
+The issue layer introduces correlation by grouping related incidents into a higher-level construct called an issue.
+
+Rather than evaluating incidents in isolation, issues provide a consolidated view of related events that collectively represent a broader problem.
+
+For example, multiple incidents across different components of a service can be grouped into a single issue that reflects service-level degradation.
+
+An issue remains active as long as at least one associated incident is open and is automatically resolved once all related incidents have closed.
+
+This layer enhances situational awareness by providing context and reducing fragmentation in how events are interpreted.
+
+⸻
+
+Policy Layer (Organizational Structure and Grouping Strategy)
+
+Policies provide the structural framework for organizing alert conditions and defining grouping behavior.
+
+They determine how incidents are associated with issues, based on the configured grouping strategy. This may include grouping at the policy level, condition level, or maintaining incidents independently.
+
+Policies allow alerting configurations to be aligned with different monitoring use cases, such as infrastructure-level monitoring or application-level monitoring.
+
+This layer provides flexibility in structuring alert behavior across environments.
+
+⸻
+
+Muting Layer (Notification Suppression Control)
+
+The muting layer provides control over when alert notifications should be suppressed.
+
+Muting rules are typically applied during:
+	•	Maintenance windows
+	•	Deployment activities
+	•	Known system conditions
+
+These rules can be defined based on entities, tags, or conditions, and can be scheduled for specific time periods.
+
+It is important to note that muting rules do not impact data collection or signal evaluation. They only control whether notifications are emitted.
+
+This ensures continuous monitoring while managing how alerts are communicated.
+
+⸻
+
+Workflow Layer (Routing and Notification Logic)
+
+The workflow layer governs how issues are evaluated for notification and how alerts are routed.
+
+Workflows define:
+	•	Which issues should trigger notifications
+	•	Where those notifications should be sent
+	•	What contextual information should be included
+
+Workflows can apply filters based on attributes such as severity, policy, entity, or metadata, enabling flexible and targeted routing.
+
+This layer ensures that alerts are delivered in a structured and context-aware manner.
+
+⸻
+
+Destination Layer (Notification Delivery)
+
+The destination layer represents the endpoints through which notifications are delivered.
+
+Common integrations include:
+	•	Slack
+	•	PagerDuty
+	•	ServiceNow
+	•	Email
+
+Destinations are configured independently and can be reused across workflows, allowing for consistent integration management and scalable notification delivery.
+
+⸻
+
+End-to-End Alerting Flow
+
+Bringing these layers together, the alerting framework follows a structured flow:
+	1.	Telemetry data generates signals
+	2.	Conditions evaluate those signals
+	3.	Incidents are created when thresholds are breached
+	4.	Incidents are correlated into issues
+	5.	Issues are processed through workflows
+	6.	Notifications are delivered via configured destinations
+
+Each layer contributes a distinct capability, ensuring that raw telemetry is transformed into meaningful and actionable alerts.
+
+⸻
+
+Illustrative Example
+
+To illustrate how these layers interact, consider a Kubernetes-based application.
+
+If multiple pods begin to experience failures, each pod may generate an individual incident based on the defined condition.
+
+These incidents are then correlated into a single issue representing a broader service-level problem.
+
+The issue is evaluated by workflows, which determine how the alert is routed to the appropriate team.
+
+If a muting rule is active — for example, during a deployment — notifications may be suppressed for that period.
+
+This example demonstrates how the alerting framework operates cohesively across layers to manage detection, correlation, and communication.
+
+⸻
+
+Conclusion
+
+New Relic alerting provides a comprehensive and layered framework for monitoring and incident detection.
+
+By combining flexible signal definition, structured evaluation, event tracking, correlation, routing, and notification delivery, it enables organizations to effectively monitor complex systems.
+
+Each layer within the framework plays a specific role, and together they form an integrated pipeline that supports operational awareness and timely response.
+
+This layered approach allows teams to scale alerting across diverse environments while maintaining clarity in how signals are detected, interpreted, and communicated.
