@@ -33,3 +33,10 @@ docker run --rm \
   -e K6_PROMETHEUS_RW_SERVER_URL="https://${OBSERVE_CUSTOMER_ID}.collect.observeinc.com/v1/prometheus/remote_write" \
   -e K6_PROMETHEUS_RW_BEARER_TOKEN="${OBSERVE_TOKEN}" \
   custom-k6-browser-observe sh -c 'echo $K6_PROMETHEUS_RW_SERVER_URL && echo ${#K6_PROMETHEUS_RW_BEARER_TOKEN}'
+
+
+docker run --rm \
+  -e K6_PROMETHEUS_RW_SERVER_URL="https://yourid.collect.observeinc.com/v1/prometheus/remote_write" \
+  -e K6_PROMETHEUS_RW_BEARER_TOKEN="actual_token_here" \
+  custom-k6-browser-observe run /scripts/script.js \
+  -o experimental-prometheus-rw
