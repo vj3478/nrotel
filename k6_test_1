@@ -15,3 +15,15 @@ export default function () {
 
   sleep(1);
 }
+
+
+docker run --rm \
+  -v "$(pwd):/scripts" \
+  -e K6_BROWSER_HEADLESS=true \
+  custom-k6-browser-observe run /scripts/script.js \
+  --out experimental-prometheus-rw \
+  --tag testid=k6-browser \
+  --log-output=stdout \
+  --env K6_PROMETHEUS_RW_SERVER_URL=https://$OBSERVE_CUSTOMER_ID.collect.observeinc.com/v1/prometheus/remote_write \
+  --env K6_PROMETHEUS_RW_BEARER_TOKEN=$OBSERVE_TOKEN
+
