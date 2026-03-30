@@ -1,0 +1,209 @@
+h1. 🚀 New Relic Workflow Automation – Team Reference Guide
+
+h2. 📌 Overview
+*New Relic Workflow Automation* enables teams to automate operational workflows triggered by alerts or events.
+
+It combines:
+- NRQL (data queries)
+- Logic (conditions)
+- Integrations (Slack, PagerDuty, APIs)
+
+*Core Flow:* Event → Enrich → Decide → Act
+
+---
+
+h2. 🎯 When to Use
+
+*Use Workflow Automation when:*
+- Multi-step investigation is required after an alert
+- Additional data/context is needed before notifying
+- Alerts need intelligent routing (based on severity or impact)
+- Automation or remediation actions are required
+
+*Do NOT use when:*
+- Simple threshold alerts are sufficient
+- Static notifications without logic are enough
+
+---
+
+h2. 🏗️ Standard Workflow Pattern (Recommended)
+
+1. Trigger (Alert / Event / API)
+2. Query (Fetch context using NRQL)
+3. Loop (Optional – process multiple entities)
+4. Condition (Evaluate severity or state)
+5. Action (Notify / Integrate / Remediate)
+
+---
+
+h2. 🧩 Core Building Blocks
+
+h3. 🔔 Trigger
+Starts the workflow.
+
+*Examples:*
+- Alert condition triggered
+- Manual execution
+- API-based trigger
+
+---
+
+h3. 📊 NRQL Query (Context Enrichment)
+Fetch additional data to make decisions.
+
+{code:sql}
+SELECT count(*)
+FROM Transaction
+WHERE appName = 'my-service'
+SINCE 5 minutes ago
+{code}
+
+*Purpose:*
+- Identify impacted entities
+- Measure severity
+- Add context before notifying
+
+---
+
+h3. 🔁 Loop (Optional)
+Used when query returns multiple results.
+
+*Examples:*
+- Loop through services
+- Loop through hosts
+- Loop through accounts
+
+---
+
+h3. 🧠 Condition (Decision Logic)
+Controls workflow branching.
+
+Example:
+IF value > threshold → escalate  
+ELSE → notify only  
+
+---
+
+h3. 🌐 Action
+Final step where action is taken.
+
+*Common actions:*
+- Slack notification
+- PagerDuty incident
+- Webhook/API call (Jenkins, Lambda, ServiceNow)
+- Logging/output
+
+---
+
+h2. 📘 Generic Workflow Example
+
+*Scenario:* Alert triggers → enrich data → notify
+
+h3. Step 1: Trigger
+Alert fires (error spike / latency / resource issue)
+
+h3. Step 2: Enrich Data
+
+{code:sql}
+SELECT count(*)
+FROM Transaction
+WHERE appName = '{{appName}}'
+FACET host, containerId
+LIMIT 5
+{code}
+
+h3. Step 3: Condition
+IF count > threshold
+
+h3. Step 4: Action (Slack Example)
+
+🚨 Issue Detected  
+Application: {{appName}}  
+Top Entity: {{host/container}}  
+Metric Value: {{count}}  
+
+---
+
+h2. 🔗 Common Use Cases
+
+|| Team || Use Case ||
+| SRE | Incident enrichment and routing |
+| Platform | Identify noisy services/resources |
+| APM | Analyze slow or failing transactions |
+| Infra | CPU/memory/disk anomaly investigation |
+| Security | Detect unusual activity patterns |
+| DevOps | Trigger CI/CD or rollback pipelines |
+
+---
+
+h2. 🔀 Standard Decision Flow
+
+IF critical → PagerDuty  
+ELSE IF warning → Slack  
+ELSE → Log only  
+
+---
+
+h2. 🛠️ Reusable Workflow Templates
+
+*1. Alert Enrichment*
+- Trigger → Alert
+- Query → Add context
+- Action → Send enriched notification
+
+*2. Root Cause Analysis*
+- Trigger → Alert
+- Query → Identify impacted entities
+- Condition → Filter top offenders
+- Action → Notify
+
+*3. Multi-Entity Analysis*
+- Trigger → Alert
+- Query → Get list
+- Loop → Analyze each
+- Action → Notify or aggregate
+
+*4. Auto-Remediation*
+- Trigger → Alert
+- Query → Validate issue
+- Condition → Confirm severity
+- Action → Call API / Lambda
+
+---
+
+h2. 🧠 Best Practices
+
+- Always enrich alerts with context (entity, metric, timeframe)
+- Optimize NRQL queries (use LIMIT, filters)
+- Use conditions to reduce alert noise
+- Handle empty query results gracefully
+- Keep workflows simple and modular
+
+---
+
+h2. ⚠️ Common Mistakes
+
+|| Mistake || Impact ||
+| No conditions | Alert fatigue |
+| Heavy queries in loops | Slow workflows |
+| No context in alerts | Poor usability |
+| Too many steps | Hard to maintain |
+
+---
+
+h2. 📊 Workflow vs Alert
+
+|| Feature || Alert || Workflow ||
+| Simple threshold | Yes | No |
+| Multi-step logic | No | Yes |
+| Data enrichment | No | Yes |
+| Automation | No | Yes |
+
+---
+
+h2. 🎯 Key Takeaways
+
+- Workflow Automation = Smart Alerting + Automation
+- Use it for multi-step, data-driven workflows
+- Works across all teams (SRE, APM, Infra, Security, DevOps)
+- Focus on actionable, context-rich outputs
