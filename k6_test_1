@@ -41,12 +41,11 @@ docker run --rm \
   custom-k6-browser-observe run /scripts/script.js \
   -o experimental-prometheus-rw
 
-
-
 docker run --rm \
+  --add-host host.docker.internal:host-gateway \
+  -e NO_PROXY=host.docker.internal,localhost,127.0.0.1,169.254.169.254 \
   -e HTTP_PROXY="http://aws-proxy.com:8099" \
-  -e HTTPS_PROXY="http://aws-proxy.com:8099" \
-  -e NO_PROXY=host.docker.internal,localhost,127.0.0.1 \
+  -e HTTPS_PROXY="http://aws-proxy.cloud.capitalone.com:8099" \
   -e K6_OTEL_EXPORTER_TYPE=grpc \
   -e K6_OTEL_GRPC_EXPORTER_ENDPOINT=host.docker.internal:4317 \
   -e K6_OTEL_GRPC_EXPORTER_INSECURE=true \
@@ -54,5 +53,5 @@ docker run --rm \
   -e K6_OTEL_METRIC_PREFIX=vj_k6_ \
   -e K6_BROWSER_HEADLESS=true \
   -v "$(pwd)":/scripts \
-  <your-image> \
+  0ad688d71434 \
   run -o opentelemetry /scripts/test.js
