@@ -40,3 +40,16 @@ docker run --rm \
   -e K6_PROMETHEUS_RW_BEARER_TOKEN="actual_token_here" \
   custom-k6-browser-observe run /scripts/script.js \
   -o experimental-prometheus-rw
+
+
+
+docker run --rm \
+  --add-host host.docker.internal:host-gateway \
+  -v "$PWD:/scripts" \
+  -e K6_OTEL_EXPORTER_TYPE=grpc \
+  -e K6_OTEL_GRPC_EXPORTER_ENDPOINT=host.docker.internal:4317 \
+  -e K6_OTEL_SERVICE_NAME=k6-browser \
+  -e K6_OTEL_METRIC_PREFIX=k6_ \
+  -e K6_BROWSER_HEADLESS=true \
+  <your-k6-browser-image> \
+  run -o opentelemetry /scripts/test.js
