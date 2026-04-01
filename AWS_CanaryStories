@@ -1,0 +1,356 @@
+Phase 1 — MVP (4–6 weeks)
+
+Epic 1: AI Script Generation
+
+Story 1: Build input form for canary generation
+
+Story Points: 3
+
+Description:
+Create a simple user interface or API endpoint that allows a user to submit the minimum set of details required to generate a CloudWatch Synthetics canary script. The goal of this story is to provide an easy intake mechanism so that users do not need to manually write code. The form should capture basic information such as application name, target URL, canary type, and optional user flow steps. This story is foundational because all later AI generation and deployment logic will depend on clean and validated input.
+
+Acceptance Criteria:
+	•	User can enter application name
+	•	User can enter URL
+	•	User can choose canary type
+	•	User can optionally provide test steps in free text
+	•	Required field validation is present
+	•	Submitted data is successfully received by backend
+
+⸻
+
+Story 2: Integrate AI service for canary script generation
+
+Story Points: 5
+
+Description:
+Integrate an AI service such as OpenAI or Amazon Bedrock into the backend so that the application can generate a starter CloudWatch Synthetics script from user input. The generated output should target the CloudWatch Synthetics runtime and produce valid Node.js-based canary code for common checks such as page load validation, login flows, and basic navigation. This story should include prompt design, request handling, and response formatting so that the returned code is usable and readable. This is the core intelligence layer of the MVP.
+
+Acceptance Criteria:
+	•	Backend sends structured prompt to AI service
+	•	AI returns a CloudWatch-compatible script
+	•	Generated script includes navigation and validation steps
+	•	Prompt can be adjusted without major code changes
+	•	Errors from AI service are handled gracefully
+
+⸻
+
+Story 3: Display and download generated script
+
+Story Points: 2
+
+Description:
+Provide a way for users to review the generated canary script before deployment. The application should render the generated code clearly in the UI or return it cleanly through the API. Users should also be able to download the script as a JavaScript file for offline review, manual editing, or future reuse. This story ensures transparency and gives users confidence in what the AI generated.
+
+Acceptance Criteria:
+	•	Generated script is shown in a readable format
+	•	User can download the script as a .js file
+	•	Script formatting is preserved
+	•	If generation fails, user sees a useful error message
+
+⸻
+
+Epic 2: AWS Deployment
+
+Story 4: Upload generated script to S3
+
+Story Points: 2
+
+Description:
+Implement logic to upload the generated canary script to an S3 bucket so it can be used as an artifact for CloudWatch Synthetics deployment. The solution should support configurable bucket names and a consistent naming structure for script files. This story is required because CloudWatch canary deployment typically depends on a packaged artifact stored in S3.
+
+Acceptance Criteria:
+	•	Script file uploads successfully to configured S3 bucket
+	•	File naming follows a predictable pattern
+	•	Upload errors are logged and surfaced clearly
+	•	Bucket name can be configured without code changes
+
+⸻
+
+Story 5: Create CloudWatch canary using AWS SDK
+
+Story Points: 6
+
+Description:
+Build backend logic that uses the AWS SDK to create a CloudWatch Synthetics canary from the generated script. The implementation should support the basic parameters needed for deployment, such as canary name, runtime version, execution schedule, and artifact location. This story delivers the first end-to-end deployment capability and is one of the most important functional milestones in the MVP.
+
+Acceptance Criteria:
+	•	Backend can create a new canary in AWS
+	•	Canary references the generated script artifact
+	•	Runtime and schedule are configurable
+	•	Deployment success and failure responses are captured
+	•	Errors such as invalid IAM permissions or runtime issues are handled clearly
+
+⸻
+
+Story 6: Configure basic alerting for canary failures
+
+Story Points: 3
+
+Description:
+Set up a basic CloudWatch alarm and notification mechanism so that failed canary runs can generate alerts. This should include integration with an SNS topic or a similar notification target. The purpose of this story is to ensure the canary is not only created, but also provides operational value by notifying users when the monitored check fails.
+
+Acceptance Criteria:
+	•	Alarm is created for canary failure metric
+	•	SNS topic or notification endpoint is linked
+	•	Alarm triggers when canary fails
+	•	Alarm configuration is repeatable for future canaries
+
+⸻
+
+Epic 3: Logging and Error Handling
+
+Story 7: Add application logging and user-friendly error handling
+
+Story Points: 3
+
+Description:
+Add structured logging and clear error handling across the application so that failures in AI generation, AWS deployment, and input processing can be diagnosed quickly. The application should provide technical enough logs for debugging while also returning understandable messages to end users. This story improves supportability and reduces the risk of silent failures.
+
+Acceptance Criteria:
+	•	Logs capture major processing steps
+	•	Errors from AI calls are logged
+	•	Errors from AWS deployment are logged
+	•	User receives understandable failure messages
+	•	Application does not crash on common input or integration failures
+
+⸻
+
+Epic 4: Demo Readiness
+
+Story 8: Prepare MVP demo scenario and documentation
+
+Story Points: 2
+
+Description:
+Prepare a clean end-to-end demo that shows how a user can input application details, generate a canary script with AI, review it, and deploy it to AWS. This story also includes creating sample test cases and minimal walkthrough documentation so the solution can be demonstrated consistently to stakeholders. The focus is on presentation readiness and confidence in the working MVP.
+
+Acceptance Criteria:
+	•	At least one end-to-end demo flow works consistently
+	•	Sample input scenarios are documented
+	•	Demo can be executed without code changes during presentation
+	•	Basic usage instructions are available
+
+⸻
+
+Phase 2 — Full End-to-End App (4–6 weeks)
+
+Epic 5: Advanced AI Features
+
+Story 9: Support multi-step user flows in generated scripts
+
+Story Points: 5
+
+Description:
+Enhance the AI generation logic to support more realistic browser journeys involving multiple pages, clicks, waits, and validations. Instead of only supporting simple page checks, the system should generate scripts that follow a user flow such as login, navigate to dashboard, open a page, and confirm expected content. This will make the solution more valuable for teams that want synthetic monitoring closer to actual user behavior.
+
+Acceptance Criteria:
+	•	AI can generate scripts for multiple sequential browser steps
+	•	Output includes wait conditions and validations
+	•	Generated flow can move across multiple pages
+	•	Example multi-step scenario is successfully tested
+
+⸻
+
+Story 10: Add best-effort support for SSO login flows
+
+Story Points: 6
+
+Description:
+Extend the generation logic to support basic enterprise SSO scenarios where users are redirected through a login provider before reaching the target application. The goal is not to guarantee support for every complex SSO case, but to handle common deterministic flows and document known limitations. This story is important because many enterprise applications are protected by SSO and would otherwise not be covered by the platform.
+
+Acceptance Criteria:
+	•	AI can generate scripts for basic SSO-style login flows
+	•	Credentials are not hardcoded in generated output
+	•	Known SSO limitations are documented
+	•	At least one representative SSO scenario is validated
+
+⸻
+
+Story 11: Implement hybrid model using templates plus AI
+
+Story Points: 4
+
+Description:
+Introduce a hybrid generation approach where the application uses predefined templates for simple canary types and falls back to AI only for more complex flows. This reduces cost, improves consistency, and speeds up generation for standard checks. It also creates a more mature solution architecture by avoiding unnecessary AI usage for basic scenarios such as simple health checks and basic page validation.
+
+Acceptance Criteria:
+	•	Simple use cases use template-based generation
+	•	Complex use cases invoke AI generation
+	•	Decision logic between template and AI path is implemented
+	•	Both paths return scripts in a consistent format
+
+⸻
+
+Epic 6: Security and Secrets
+
+Story 12: Integrate AWS Secrets Manager for credentials and configuration
+
+Story Points: 4
+
+Description:
+Implement support for AWS Secrets Manager so that credentials and sensitive runtime values used by canary scripts are stored securely outside of code. This story should ensure that generated scripts reference secrets safely and that deployment configuration can map applications to the appropriate secret names. This is required for moving beyond demo use cases into safer real-world usage.
+
+Acceptance Criteria:
+	•	Sensitive values are stored in Secrets Manager
+	•	Generated scripts do not contain hardcoded secrets
+	•	Application can reference configured secret names
+	•	Secret retrieval pattern is documented and tested
+
+⸻
+
+Story 13: Add guardrails and validation for AI-generated output
+
+Story Points: 3
+
+Description:
+Add a validation layer that checks AI-generated scripts for unsafe or undesirable output before deployment. This includes scanning for hardcoded credentials, invalid patterns, unsupported runtime assumptions, or missing validation steps. The goal is to improve trust in AI output and reduce the chance of deploying poor-quality scripts.
+
+Acceptance Criteria:
+	•	Generated scripts are checked before deployment
+	•	Hardcoded credentials are blocked
+	•	Clearly unsafe or unsupported patterns are flagged
+	•	Validation errors are shown to user before deployment
+
+⸻
+
+Epic 7: User Interface and Metadata
+
+Story 14: Build full UI dashboard for canary management
+
+Story Points: 5
+
+Description:
+Expand the MVP interface into a more complete application dashboard that allows users not only to generate canaries, but also to view previously created canaries and inspect their details. The dashboard should serve as the main user experience layer for managing the solution. This makes the app feel like a product rather than a one-time script generator.
+
+Acceptance Criteria:
+	•	User can create canary from UI
+	•	User can view previously created canaries
+	•	UI shows basic deployment details and status
+	•	Navigation between create and view functions is clear
+
+⸻
+
+Story 15: Store canary metadata for ownership and tracking
+
+Story Points: 4
+
+Description:
+Implement a metadata storage layer, such as DynamoDB, to persist details about each generated or deployed canary. This should include application name, owner, environment, account, deployment status, and timestamps. The purpose of this story is to enable future reporting, governance, and support for a larger multi-team operating model.
+
+Acceptance Criteria:
+	•	Metadata is stored for each canary
+	•	Stored fields include owner, app name, environment, and status
+	•	Metadata can be retrieved and displayed in UI
+	•	Failed and successful deployments are tracked
+
+⸻
+
+Epic 8: Governance and Reporting
+
+Story 16: Build canary coverage and status dashboard
+
+Story Points: 4
+
+Description:
+Create a reporting view that helps stakeholders understand how many canaries exist, which ones are healthy or failing, and where there may be missing monitoring coverage. This dashboard is meant to provide visibility at the team or platform level and help justify the operational value of the solution.
+
+Acceptance Criteria:
+	•	Dashboard shows total canary count
+	•	Dashboard shows success and failure summary
+	•	Coverage or ownership gaps can be identified
+	•	Data is derived from stored metadata and canary status
+
+⸻
+
+Story 17: Add tagging and ownership model for deployed canaries
+
+Story Points: 3
+
+Description:
+Ensure each deployed canary is associated with ownership and organizational metadata through a tagging model. Tags should include fields such as team, application, environment, and cost center where appropriate. This is important for supportability, reporting, and future large-scale multi-account rollout.
+
+Acceptance Criteria:
+	•	Deployed canaries include standard tags
+	•	Tags include owner and application context
+	•	Tag values can be configured during canary creation
+	•	Tagging standard is documented
+
+⸻
+
+Epic 9: Automation and Scale
+
+Story 18: Support bulk canary generation from CSV or JSON input
+
+Story Points: 4
+
+Description:
+Add support for generating multiple canaries in a single operation from a structured input file such as CSV or JSON. This allows onboarding several applications or teams more efficiently and demonstrates that the platform can scale beyond one-at-a-time usage. The feature should validate bulk input and process each entry consistently.
+
+Acceptance Criteria:
+	•	User can upload CSV or JSON input
+	•	Application can process multiple canary requests
+	•	Invalid rows are flagged clearly
+	•	Summary of success and failure is returned
+
+⸻
+
+Story 19: Add retry and resilience handling to deployment workflow
+
+Story Points: 3
+
+Description:
+Improve the robustness of the deployment workflow by handling transient errors such as temporary AWS API failures, AI timeout issues, or partial deployment steps. The application should be able to retry safe operations and clearly identify where a deployment failed. This story improves reliability and reduces manual intervention.
+
+Acceptance Criteria:
+	•	Transient failures are retried where safe
+	•	Partial deployment errors are captured
+	•	Logs show retry attempts and final outcome
+	•	User is informed whether action fully succeeded or partially failed
+
+⸻
+
+Epic 10: Production Readiness
+
+Story 20: Add authentication and access control to the application
+
+Story Points: 4
+
+Description:
+Protect the application so that only authorized users can generate and deploy canaries. The access model can be simple in the first version, but it should be sufficient to avoid unrestricted use of deployment functionality. This is important once the app starts being used by multiple teams.
+
+Acceptance Criteria:
+	•	Unauthorized users cannot access core functions
+	•	Authentication mechanism is implemented
+	•	Authenticated user identity is available in app context
+	•	Access approach is documented
+
+⸻
+
+Story 21: Dockerize the application for consistent deployment
+
+Story Points: 3
+
+Description:
+Package the application into a Docker container so it can be run consistently in development, testing, and production environments. This story should include a Dockerfile and the required environment configuration approach. It will simplify deployment and make the app easier to share or host.
+
+Acceptance Criteria:
+	•	Application can run from Docker image
+	•	Required environment variables are configurable
+	•	Docker build and run instructions are documented
+	•	Container runs successfully in local test environment
+
+⸻
+
+Story 22: Add unit tests for core components
+
+Story Points: 4
+
+Description:
+Create unit tests for the most important application components, especially input validation, AI request handling, deployment helper functions, and metadata storage logic. External integrations should be mocked where needed. This story improves maintainability and gives confidence when making future changes.
+
+Acceptance Criteria:
+	•	Core modules have unit test coverage
+	•	External calls are mocked where appropriate
+	•	Tests can be run locally
+	•	Test results are documented in project README or CI output
