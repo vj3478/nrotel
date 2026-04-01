@@ -1,0 +1,409 @@
+
+⸻
+
+Epic 2: Template Generator
+
+Story 5: Build base template engine for canary generation
+
+Story Points: 5
+
+Description:
+Create the core template generation engine that builds CloudWatch Synthetics scripts from predefined templates and request parameters. The engine should support injecting values such as URL, environment, team, and schedule into reusable script patterns. This is the primary value of the platform and should work fully without AI.
+
+Acceptance Criteria:
+	•	Template engine generates script from selected template
+	•	Dynamic values are injected correctly
+	•	Output script is readable and valid
+	•	Template generation works without AI dependency
+	•	Errors in missing template inputs are handled clearly
+
+⸻
+
+Story 6: Build standard URL validation template
+
+Story Points: 2
+
+Description:
+Create a reusable template for simple page availability checks. This template should open the target URL, wait for page load, verify response or page state, and log success or failure. This provides a quick onboarding path for teams that need simple synthetic coverage.
+
+Acceptance Criteria:
+	•	Template supports a target URL input
+	•	Script performs page load validation
+	•	Script includes success and failure logging
+	•	Script can be generated repeatedly with different URLs
+	•	Template output passes basic validation checks
+
+⸻
+
+Story 7: Build API endpoint validation template
+
+Story Points: 3
+
+Description:
+Create a reusable API canary template that validates an HTTP endpoint response. The template should support method, headers, response code check, and optional response body validation. This enables teams to monitor service endpoints without browser-based logic.
+
+Acceptance Criteria:
+	•	Template supports API endpoint input
+	•	Template supports method selection
+	•	Template supports expected response code validation
+	•	Optional header input is supported
+	•	Generated script validates endpoint response correctly
+
+⸻
+
+Story 8: Build SSO page starter template
+
+Story Points: 5
+
+Description:
+Create a predefined starter template for SSO-based login pages. The goal is to support common enterprise login journeys where a user is redirected to a central login page before reaching the application. The template should include a structured approach for entering credentials, submitting the login form, waiting for the redirect, and validating arrival on the target page. This should be positioned as a best-effort supported flow, since SSO implementations vary by application.
+
+Acceptance Criteria:
+	•	Template supports SSO login page URL
+	•	Template supports username and password field handling pattern
+	•	Template supports post-login landing page validation
+	•	Template clearly separates configurable selectors and values
+	•	Known limitations for custom SSO flows are documented
+
+⸻
+
+Story 9: Build exchange API endpoint token-access template
+
+Story Points: 6
+
+Description:
+Create a template for scenarios where the canary must call an exchange API endpoint to obtain access to another application before validating a page or API. This template should support requesting a token or session credential from an exchange endpoint, storing the response value in memory during execution, and reusing it in subsequent requests or browser interactions. This is important for enterprise applications that require pre-authentication or delegated access flow before monitoring.
+
+Acceptance Criteria:
+	•	Template supports exchange API endpoint input
+	•	Template can send request to obtain token or access credential
+	•	Returned token can be used in subsequent API request or page flow
+	•	Sensitive values are not hardcoded in script
+	•	Generated script clearly separates token retrieval step from validation step
+
+⸻
+
+Story 10: Build login flow template with configurable steps
+
+Story Points: 4
+
+Description:
+Create a standard login template for non-SSO applications. The template should support username entry, password entry, submit action, and landing page validation. It should also allow optional extension points for one or two additional navigation steps after login.
+
+Acceptance Criteria:
+	•	Template supports login URL
+	•	Username/password inputs are parameterized
+	•	Submit action is included
+	•	Landing page validation is included
+	•	Optional post-login steps are supported
+
+⸻
+
+Epic 3: Validation and Standardization
+
+Story 11: Build generated script validation layer
+
+Story Points: 4
+
+Description:
+Implement a validation layer that checks generated scripts before deployment. The goal is to catch missing inputs, malformed script content, unsupported placeholders, or required steps that were not rendered correctly. This provides confidence that template-generated output is safe and usable before AWS deployment.
+
+Acceptance Criteria:
+	•	Validation checks for unresolved placeholders
+	•	Validation checks for required sections based on template type
+	•	Invalid scripts are blocked from deployment
+	•	User receives clear validation errors
+	•	Validation can run independently from deployment
+
+⸻
+
+Story 12: Enforce standard naming convention and metadata tagging
+
+Story Points: 3
+
+Description:
+Add logic to enforce consistent naming and metadata standards for all canaries. Naming should include elements such as application name, environment, and canary type where appropriate. Metadata should include owner/team, template type, environment, and proxy selection. This improves consistency, governance, and future scalability.
+
+Acceptance Criteria:
+	•	Canary name follows configured standard
+	•	Metadata includes owner/team
+	•	Metadata includes environment
+	•	Metadata includes selected template
+	•	Metadata includes proxy choice if used
+
+⸻
+
+Epic 4: Deployment
+
+Story 13: Upload generated script artifacts to S3
+
+Story Points: 2
+
+Description:
+Implement S3 upload for generated canary script artifacts so they can be used during CloudWatch canary creation. File structure and naming should be predictable and aligned with generated metadata.
+
+Acceptance Criteria:
+	•	Script artifact uploads successfully to S3
+	•	S3 key naming follows standard
+	•	Upload errors are logged and returned clearly
+	•	Bucket name is configurable
+
+⸻
+
+Story 14: Create CloudWatch canary from selected template
+
+Story Points: 6
+
+Description:
+Implement AWS deployment logic that creates a CloudWatch Synthetics canary using the generated script artifact and selected request parameters. The deployment process should support environment-aware naming, selected schedule, and any required runtime configuration. This story delivers the first complete working path from user request to live canary.
+
+Acceptance Criteria:
+	•	CloudWatch canary can be created from generated template
+	•	Runtime configuration is applied successfully
+	•	Schedule is configurable
+	•	Deployment response is captured and stored
+	•	Failures such as permission issues are handled clearly
+
+⸻
+
+Story 15: Support deployment configuration for proxy-aware canaries
+
+Story Points: 4
+
+Description:
+Extend deployment logic so that canaries requiring proxy access can be configured appropriately. This may include injecting proxy settings into execution logic, configuration values, or runtime parameters as required by the selected implementation pattern.
+
+Acceptance Criteria:
+	•	Proxy-enabled canaries can be deployed
+	•	Proxy configuration is passed consistently from request to deployment
+	•	Non-proxy canaries continue to work without change
+	•	Deployment metadata records proxy use
+	•	Validation blocks incomplete proxy configurations
+
+⸻
+
+Story 16: Create basic CloudWatch alarm for canary failures
+
+Story Points: 3
+
+Description:
+Create an alarm and notification setup for deployed canaries so failures produce actionable alerts. This ensures the generated canary delivers operational value after deployment.
+
+Acceptance Criteria:
+	•	Alarm is created for failure conditions
+	•	Alarm links to the deployed canary
+	•	Notification target is configurable
+	•	Alarm behavior is tested for at least one sample canary
+
+⸻
+
+Epic 5: Review and User Experience
+
+Story 17: Display generated script for review before deployment
+
+Story Points: 2
+
+Description:
+Allow the user to view the generated script before it is deployed. This provides transparency, allows review, and helps users trust the template engine output.
+
+Acceptance Criteria:
+	•	Script is displayed in readable format
+	•	Review happens before deployment
+	•	Validation errors are shown inline where possible
+	•	User can confirm or cancel deployment
+
+⸻
+
+Story 18: Allow script download for offline review
+
+Story Points: 2
+
+Description:
+Allow the user to download the generated script as a file for offline inspection, change review, or future reuse.
+
+Acceptance Criteria:
+	•	Script can be downloaded as a file
+	•	File content matches reviewed output
+	•	File name follows naming standard
+
+⸻
+
+Story 19: Add optional custom steps or custom script input
+
+Story Points: 4
+
+Description:
+Allow the user to provide optional custom steps or a custom script fragment when the standard templates are not enough. This keeps the app useful without making AI mandatory. User-provided content should go through the same validation layer before deployment.
+
+Acceptance Criteria:
+	•	User can provide optional custom steps or script input
+	•	Custom content is stored with request
+	•	Validation runs against user-provided content
+	•	Deployment can proceed only if validation passes
+
+⸻
+
+Phase 2 — Full End-to-End App (4–6 weeks)
+
+Goal
+
+Expand the MVP into a more complete, enterprise-ready self-service platform.
+
+⸻
+
+Epic 6: Secrets and Secure Configuration
+
+Story 20: Integrate secure secret references for login and token templates
+
+Story Points: 5
+
+Description:
+Add support for referencing secrets securely instead of embedding sensitive values in generated scripts. This is especially important for login templates, SSO templates, and exchange API token templates.
+
+Acceptance Criteria:
+	•	Templates use secret references instead of hardcoded credentials
+	•	Secret identifiers can be configured per environment
+	•	Generated script does not expose sensitive values
+	•	Validation blocks hardcoded credentials where possible
+
+⸻
+
+Story 21: Support environment-specific endpoint and secret mapping
+
+Story Points: 4
+
+Description:
+Allow URLs, SSO pages, exchange API endpoints, and secret references to vary by environment. This ensures the same application can be deployed consistently across dev, test, and prod with correct target values.
+
+Acceptance Criteria:
+	•	Endpoint mapping can differ by environment
+	•	Secret mapping can differ by environment
+	•	Template engine resolves correct values by environment
+	•	Missing mappings produce clear validation errors
+
+⸻
+
+Epic 7: Metadata, Search, and Governance
+
+Story 22: Store canary metadata for ownership and tracking
+
+Story Points: 4
+
+Description:
+Persist metadata about each generated and deployed canary, including template type, environment, team, proxy usage, and deployment status. This supports governance and future reporting.
+
+Acceptance Criteria:
+	•	Metadata stored for each canary
+	•	Includes owner/team, environment, template, proxy, and status
+	•	Metadata can be retrieved after deployment
+	•	Failed deployments are also recorded
+
+⸻
+
+Story 23: Build canary management dashboard
+
+Story Points: 5
+
+Description:
+Create a dashboard where users can view existing canaries, their configurations, ownership, and current status. This turns the app into a manageable product instead of a one-time generator.
+
+Acceptance Criteria:
+	•	User can view existing generated or deployed canaries
+	•	Dashboard shows environment and owner
+	•	Dashboard shows template type and status
+	•	Dashboard supports basic filtering or search
+
+⸻
+
+Story 24: Add tagging standard for team, app, and environment
+
+Story Points: 3
+
+Description:
+Ensure deployed canaries include a standard organizational tagging model so ownership and reporting are easier in future multi-team usage.
+
+Acceptance Criteria:
+	•	Standard tags added during deployment
+	•	Tags include app, team, and environment
+	•	Tag values align to request metadata
+	•	Tagging behavior is documented
+
+⸻
+
+Epic 8: Advanced Template Support
+
+Story 25: Support multi-step navigation template extensions
+
+Story Points: 5
+
+Description:
+Extend template logic so users can configure a series of navigation and validation steps after login or after token acquisition. This allows the app to support more realistic browser journeys without requiring AI.
+
+Acceptance Criteria:
+	•	User can define multiple sequential steps
+	•	Steps can include click, wait, and validate actions
+	•	Generated script preserves execution order
+	•	Validation checks step completeness
+
+⸻
+
+Story 26: Add optional AI-assisted enhancement path
+
+Story Points: 4
+
+Description:
+Add an optional path where user-provided steps or scripts can be enhanced or refined with AI when available, without making AI required for normal operation. The app must still function fully if AI is disabled or unavailable.
+
+Acceptance Criteria:
+	•	Core template flow works without AI
+	•	AI enhancement is optional and separately triggered
+	•	AI output still goes through validation
+	•	Clear fallback exists when AI is unavailable
+
+⸻
+
+Epic 9: Production Readiness
+
+Story 27: Add authentication and access control
+
+Story Points: 4
+
+Description:
+Restrict the ability to create, review, or deploy canaries to authorized users.
+
+Acceptance Criteria:
+	•	Unauthorized users cannot access protected actions
+	•	Authenticated identity is available in app context
+	•	Access approach is documented
+
+⸻
+
+Story 28: Dockerize application for consistent deployment
+
+Story Points: 3
+
+Description:
+Package the application as a container so it can be run consistently across environments.
+
+Acceptance Criteria:
+	•	Dockerfile is created
+	•	App can run locally in container
+	•	Config values can be injected through environment variables
+
+⸻
+
+Story 29: Add unit tests for template generation and deployment helpers
+
+Story Points: 4
+
+Description:
+Create unit tests for core logic including template rendering, validation, environment mapping, proxy selection, and deployment helper functions.
+
+Acceptance Criteria:
+	•	Unit tests exist for major core paths
+	•	External integrations are mocked where needed
+	•	Tests run locally successfully
+
+⸻
+
+Estimated Points Summary
