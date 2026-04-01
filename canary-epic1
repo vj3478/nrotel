@@ -1,0 +1,74 @@
+Phase 1 — MVP (4–6 weeks)
+
+Goal
+
+Build a self-service canary template generator and deployment app that works without AI and supports the most important standard enterprise use cases.
+
+⸻
+
+Epic 1: User Input and Template Selection
+
+Story 1: Build canary request form with core input fields
+
+Story Points: 4
+
+Description:
+Create the main intake form or API request model for canary generation. The form should collect the minimum required information to generate a canary from predefined templates. This includes application name, target URL, canary type, environment, owner/team details, and schedule. This story establishes the standard request model that all generation, validation, and deployment logic will use.
+
+Acceptance Criteria:
+	•	User can enter application name
+	•	User can enter target URL
+	•	User can choose canary type
+	•	User can select environment
+	•	User can provide owner or team name
+	•	User can provide execution schedule
+	•	Required field validation is implemented
+	•	Backend receives and stores the request payload correctly
+
+⸻
+
+Story 2: Add environment selection to template generator
+
+Story Points: 2
+
+Description:
+Enhance the request form and generation logic to support environment-specific canary creation. The user should be able to select values such as dev, test, stage, or prod, and the generated script and deployment configuration should reflect the selected environment. This ensures the app can support multiple deployment environments without manual code changes.
+
+Acceptance Criteria:
+	•	User can select environment from supported values
+	•	Environment is passed into generation logic
+	•	Generated canary naming includes environment where applicable
+	•	Deployment metadata stores the selected environment
+	•	Validation prevents invalid environment values
+
+⸻
+
+Story 3: Add proxy selection option in request form
+
+Story Points: 3
+
+Description:
+Add support for selecting whether the canary should run through a proxy and which proxy configuration should be used. Some applications may require routing through a network proxy to access internal or restricted endpoints. The selected proxy option should be passed through the template generation and deployment workflow.
+
+Acceptance Criteria:
+	•	User can choose no proxy or a configured proxy option
+	•	Proxy selection is captured in request payload
+	•	Generated script or config supports proxy usage where required
+	•	Deployment workflow stores proxy-related metadata
+	•	Invalid or unsupported proxy selections are rejected
+
+⸻
+
+Story 4: Add canary template selection experience
+
+Story Points: 3
+
+Description:
+Allow users to select from a defined set of canary templates rather than forcing all canaries through a single generation flow. Initial templates should include simple URL validation, API endpoint check, login flow, SSO flow starter, and token-based access flow. This story makes the platform usable without AI and ensures consistency in generated scripts.
+
+Acceptance Criteria:
+	•	User can view available template types
+	•	User can select a template during request creation
+	•	Selected template drives the generation path
+	•	Template choice is stored with metadata
+	•	Unsupported template requests return a clear error
