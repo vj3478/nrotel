@@ -1,0 +1,529 @@
+PRODUCTION ARCHITECTURE — NEW RELIC SYNTHETICS REPLACEMENT
+
+Users / Teams
+   |
+   v
+Web UI + API Gateway
+   |
+   v
+Backend API Service
+(FastAPI / Spring Boot)
+   |
+   +--> Aurora PostgreSQL
+   |    - monitor config
+   |    - teams
+   |    - ownership
+   |    - schedules
+   |    - alert rules
+   |    - destinations
+   |    - audit
+   |
+   +--> S3 / Git
+   |    - k6 scripts
+   |    - script versions
+   |    - packages
+   |
+   +--> AWS Secrets Manager
+        - team-owned secrets
+        - app credentials
+        - API tokens
+
+
+Scheduler Service
+   |
+   v
+Aurora PostgreSQL
+(read enabled monitors + next_run_time)
+   |
+   v
+DynamoDB
+(idempotency lock / scheduler lock)
+   |
+   v
+Amazon SQS Queues
+   |
+   +--> api-checks-prod-queue
+   +--> browser-checks-prod-queue
+   +--> api-checks-nonprod-queue
+   +--> browser-checks-nonprod-queue
+   +--> dead-letter-queue
+
+
+EKS Execution Plane
+   |
+   +--> API Job Manager Deployment
+   |       |
+   |       v
+   |     Long-running k6 HTTP workers
+   |       |
+   |       v
+   |     Execute scripted API / HTTP / ping / cert checks
+   |
+   +--> Browser Job Manager Deployment
+           |
+           v
+         Controlled k6-browser workers
+           |
+           v
+         Execute Chromium browser checks
+
+
+Result Processing
+   |
+   +--> Aurora PostgreSQL
+   |    - execution summary
+   |    - pass/fail
+   |    - failure reason
+   |    - duration
+   |    - location
+   |
+   +--> DynamoDB
+   |    - current execution state
+   |    - monitor last status
+   |    - worker heartbeat
+   |
+   +--> S3
+   |    - screenshots
+   |    - HAR files
+   |    - browser logs
+   |    - traces
+   |
+   +--> Prometheus / Amazon Managed Prometheus
+        - duration metrics
+        - success rate
+        - failure count
+        - queue lag
+        - worker health
+
+
+Alert Engine
+   |
+   v
+Reads Aurora + Prometheus + DynamoDB
+   |
+   v
+Applies rules:
+   - fail 3 out of 5
+   - fail from 2 locations
+   - timeout threshold
+   - cert expiry
+   - no successful run
+   - maintenance windows
+   |
+   v
+Notifications
+   |
+   +--> PagerDuty
+   +--> Slack
+   +--> Email
+   +--> ServiceNow
+   +--> Webhook
+
+
+----
+
+Recommended tech stack
+
+Frontend:
+- React / Next.js
+
+Backend API:
+- Python FastAPI
+  or
+- Java Spring Boot
+
+Authentication:
+- SSO / OIDC / SAML
+- Okta / Azure AD / internal IdP
+
+Authorization:
+- RBAC by team_id, app_id, environment, role
+
+Primary database:
+- Aurora PostgreSQL
+
+Operational state:
+- DynamoDB
+
+Queue:
+- Amazon SQS
+- SQS DLQ
+
+Compute:
+- Amazon EKS
+
+Runtime:
+- k6 OSS for HTTP/API checks
+- k6 browser for browser checks
+- Chromium runtime for browser execution
+
+Secrets:
+- AWS Secrets Manager
+- IRSA
+- External Secrets Operator if needed
+
+Script storage:
+- Git as source of truth
+- S3 as packaged runtime artifact store
+
+Artifact storage:
+- S3
+
+Metrics:
+- Prometheus
+- Amazon Managed Prometheus
+
+Dashboards:
+- Grafana
+
+Logs:
+- CloudWatch Logs
+- OpenSearch if advanced search is needed
+
+Tracing:
+- OpenTelemetry Collector
+
+Alerting:
+- Custom alert evaluator
+- PagerDuty / Slack / Email / ServiceNow integrations
+
+Infrastructure as Code:
+- Terraform
+- Helm
+- Argo CD or Flux
+
+CI/CD:
+- GitHub Actions / GitLab CI / Jenkins
+
+----
+
+Core service breakdown
+
+1. UI Service
+   Purpose:
+   - create monitors
+   - update monitors
+   - view results
+   - manage teams
+   - configure alert rules
+
+2. Backend API Service
+   Purpose:
+   - monitor CRUD
+   - RBAC enforcement
+   - script registration
+   - secret reference registration
+   - alert destination configuration
+
+3. Monitor Registry
+   Tech:
+   - Aurora PostgreSQL
+
+   Stores:
+   - monitor_id
+   - team_id
+   - monitor_type
+   - frequency
+   - locations
+   - script_version
+   - timeout
+   - retry_policy
+   - alert_policy
+   - enabled flag
+
+4. Scheduler Service
+   Purpose:
+   - find monitors due to run
+   - create execution_id
+   - prevent duplicate runs
+   - publish job to SQS
+   - update next_run_time
+
+5. Queue Layer
+   Tech:
+   - Amazon SQS
+
+   Queues:
+   - api-checks-prod
+   - browser-checks-prod
+   - api-checks-nonprod
+   - browser-checks-nonprod
+   - dlq
+
+6. Job Manager Service
+   Purpose:
+   - poll SQS
+   - claim job
+   - fetch monitor config
+   - fetch script package
+   - resolve secrets
+   - run k6
+   - collect result
+   - submit result
+
+7. API Worker Pool
+   Runtime:
+   - k6 HTTP
+
+   Used for:
+   - scripted API checks
+   - HTTP checks
+   - ping-style checks
+   - TLS/cert checks
+
+8. Browser Worker Pool
+   Runtime:
+   - k6 browser
+   - Chromium
+
+   Used for:
+   - scripted browser checks
+   - login flow checks
+   - UI transaction checks
+
+9. Result Processor
+   Purpose:
+   - normalize k6 output
+   - classify failure
+   - store summary
+   - upload artifacts
+   - emit metrics
+
+10. Alert Engine
+    Purpose:
+    - evaluate alert rules
+    - apply maintenance windows
+    - suppress duplicate alerts
+    - route to correct team
+    - notify PagerDuty/Slack/Email
+
+11. Reporting / Dashboard Layer
+    Tech:
+    - Grafana
+    - PostgreSQL queries
+    - Prometheus metrics
+
+---
+
+Data store decision
+
+Aurora PostgreSQL:
+Use for long-term relational data.
+
+Stores:
+- teams
+- users
+- monitors
+- monitor versions
+- schedules
+- alert rules
+- destinations
+- maintenance windows
+- execution summaries
+- audit logs
+
+
+DynamoDB:
+Use for fast operational state.
+
+Stores:
+- execution state
+- scheduler locks
+- idempotency keys
+- worker heartbeats
+- monitor last status
+
+
+S3:
+Use for large artifacts.
+
+Stores:
+- screenshots
+- HAR files
+- browser traces
+- raw logs
+- script packages
+
+
+Prometheus:
+Use for time-series metrics.
+
+Stores:
+- check duration
+- success rate
+- failure count
+- queue lag
+- worker health
+
+----
+
+Execution flow
+
+1. User creates monitor in UI
+2. API validates request
+3. Monitor metadata saved in Aurora
+4. Script stored in Git and packaged into S3
+5. Scheduler finds monitor when due
+6. Scheduler creates execution record
+7. Scheduler writes idempotency lock in DynamoDB
+8. Scheduler sends message to SQS
+9. Job Manager polls SQS
+10. Job Manager fetches config from Aurora
+11. Job Manager fetches script from S3
+12. Job Manager fetches secrets from AWS Secrets Manager
+13. k6 runs the check
+14. Result Processor stores result in Aurora
+15. Metrics emitted to Prometheus
+16. Screenshots/logs/HAR uploaded to S3
+17. DynamoDB updated with latest status
+18. Alert Engine evaluates rule
+19. Notification sent to PagerDuty/Slack/Email/ServiceNow
+
+
+
+----
+
+Recommended deployment layout
+
+AWS Account Layout:
+- shared-services account
+- prod synthetics account
+- nonprod synthetics account
+
+EKS Clusters:
+- prod EKS cluster
+- nonprod EKS cluster
+
+Namespaces:
+- synthetics-system
+- synthetics-api-workers
+- synthetics-browser-workers
+- synthetics-monitoring
+
+Do NOT create one namespace per team for 2000 teams.
+
+Use:
+- logical team isolation
+- IAM policies
+- secret path restrictions
+- RBAC in application
+- queue routing
+
+
+Reliability design
+
+Must-have reliability features:
+
+- Durable SQS queue
+- DLQ for failed jobs
+- idempotency key per monitor/location/scheduled_time
+- scheduler lock in DynamoDB
+- worker heartbeat
+- hard timeout per check
+- retry only platform failures
+- do not retry real application failures blindly
+- separate API and browser queues
+- separate API and browser workers
+- stagger schedules
+- no all-checks-at-minute-zero design
+- result classification
+- audit table for every scheduled run
+
+---
+
+Must-have reliability features:
+
+- Durable SQS queue
+- DLQ for failed jobs
+- idempotency key per monitor/location/scheduled_time
+- scheduler lock in DynamoDB
+- worker heartbeat
+- hard timeout per check
+- retry only platform failures
+- do not retry real application failures blindly
+- separate API and browser queues
+- separate API and browser workers
+- stagger schedules
+- no all-checks-at-minute-zero design
+- result classification
+- audit table for every scheduled run
+
+----
+
+Failure classification
+
+hAPP_FAILURE
+SCRIPT_FAILURE
+TIMEOUT
+BROWSER_START_FAILURE
+DNS_FAILURE
+TLS_FAILURE
+NETWORK_FAILURE
+SECRET_ACCESS_FAILURE
+PLATFORM_FAILURE
+UNKNOWN_FAILURE
+
+---
+
+Final recommendation
+
+Use this stack:
+
+UI:
+React / Next.js
+
+API:
+FastAPI
+
+Primary DB:
+Aurora PostgreSQL
+
+State store:
+DynamoDB
+
+Queue:
+Amazon SQS + DLQ
+
+Execution:
+EKS
+
+Runtime:
+k6 HTTP + k6 browser
+
+Secrets:
+AWS Secrets Manager + IRSA
+
+Artifacts:
+S3
+
+Metrics:
+Prometheus / Amazon Managed Prometheus
+
+Dashboards:
+Grafana
+
+Logs:
+CloudWatch Logs / OpenSearch
+
+Alerting:
+Custom alert engine + PagerDuty + Slack + Email
+
+IaC:
+Terraform + Helm + Argo CD
+
+---
+
+Most important design rule:
+
+k6 should be the execution engine only.
+
+Your platform must own:
+- scheduling
+- queueing
+- retries
+- deduplication
+- secrets
+- alerting
+- reporting
+- ownership
+- reliability
